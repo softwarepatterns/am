@@ -1,0 +1,56 @@
+{
+  "name": "@softwarepatterns/am",
+  "version": "0.0.1",
+  "description": "Auth client SDK for AccountMaker (Am)",
+  "keywords": [
+    "authentication",
+    "auth",
+    "sdk",
+    "typescript",
+    "oauth",
+    "openid-connect",
+    "jwt",
+    "session-management"
+  ],
+  "author": "Your Name <info@example.com>",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/softwarepatterns/am/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/softwarepatterns/am.git"
+  },
+  "homepage": "https://github.com/softwarepatterns/am#readme",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:clean": "rm -rf dist",
+    "build": "npm run build:clean && rollup -c",
+    "prepublishOnly": "npm run check",
+    "test:unit": "bun test src",
+    "test:integration": "NODE_TLS_REJECT_UNAUTHORIZED=0 bun test test/integration",
+    "typecheck": "bunx tsc --noEmit",
+    "check": "npm run typecheck && npm run build",
+    "digest": "bunx ai-digest -i . -o codebase.md --whitespace-removal --show-output-files"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

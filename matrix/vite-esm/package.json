@@ -1,0 +1,12 @@
+{
+  "type": "module",
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@softwarepatterns/am": "../../softwarepatterns-am-0.0.1.tgz"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}
