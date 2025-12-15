@@ -1,13 +1,11 @@
 import type {
-  AuthenticationResponse,
-  AuthenticationResult,
+  Authentication,
   ClientId,
   EmailCheckStatus,
   LoginMethod,
   ProblemDetails,
   SessionProfile,
   SessionTokens,
-  ResponseTokens,
   UserId,
   UserResource,
   StorageLike,
@@ -16,26 +14,32 @@ import type {
 const MINUTE_MS = 60 * 1000;
 const STATE = Symbol("state");
 
+type StorageConfig = StorageLike | "localStorage" | null | undefined;
+
 type FetchFn = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
 
 type Config = {
-  fetchFn: FetchFn;
   baseUrl: string;
   earlyRefreshMs: number;
+  fetchFn: FetchFn;
   onRefresh?: (tokens: SessionTokens) => void | Promise<void>;
-  onUnauthenticated?: () => void | Promise<void>;
-  storage?: StorageLike | "localStorage" | null;
-  storageKey?: string;
+  onProfileRefetch?: (profile: SessionProfile) => void | Promise<void>;
+  onUnauthenticated?: (e: AuthError) => void | Promise<void>;
+  profileStorageKey: string;
+  storage: StorageConfig;
+  tokensStorageKey: string;
 };
 
 type State = {
-  tokens: SessionTokens;
+  cleared: boolean;
   config: Config;
   refreshPromise: Promise<void> | null;
-  cleared: boolean;
+  profilePromise: Promise<void> | null;
+  profile: SessionProfile | null;
+  tokens: SessionTokens;
 };
 
 function getBrowserLocalStorage(): StorageLike | null {
@@ -48,65 +52,102 @@ function getBrowserLocalStorage(): StorageLike | null {
   }
 }
 
-function readTokens(state: State): SessionTokens | null {
-  const storage =
-    state.config.storage === "localStorage"
-      ? getBrowserLocalStorage()
-      : (state.config.storage ?? null);
+function resolveStorage(storageConfig: StorageConfig): StorageLike | null {
+  if (!storageConfig) return null;
+  if (storageConfig === "localStorage") return getBrowserLocalStorage();
+  return storageConfig;
+}
 
-  if (!storage) return null;
-
+function safeParse<T>(raw: string | null): T | null {
+  if (!raw) return null;
   try {
-    const key = state.config.storageKey || "am_tokens";
-    const raw = storage.getItem(key);
-    return raw ? (JSON.parse(raw) as SessionTokens) : null;
+    return JSON.parse(raw) as T;
   } catch {
     return null;
   }
 }
 
-function persistTokens(state: State) {
-  const storageOpt = state.config.storage;
-  if (!storageOpt) return;
-
-  const storage =
-    storageOpt === "localStorage" ? getBrowserLocalStorage() : storageOpt;
-
-  if (!storage) return;
-
-  try {
-    const key = state.config.storageKey || "am_tokens";
-    storage.setItem(key, JSON.stringify(state.tokens));
-  } catch {
-    // ignore
-  }
+function readJson<T>(storage: StorageLike | null, key: string): T | null {
+  if (!storage) return null;
+  return safeParse<T>(storage.getItem(key));
 }
 
-function persistTokensIfNewer(state: State) {
-  if (!state.config.storage) return;
-
-  const existing = readTokens(state);
-  if (existing && existing.expiresAt >= state.tokens.expiresAt) return;
-
-  try {
-    persistTokens(state);
-  } catch {
-    // swallow storage failures
-  }
-}
-
-function clearPersistedTokens(state: State) {
-  const storageOpt = state.config.storage;
-  if (!storageOpt) return;
-
-  const storage =
-    storageOpt === "localStorage" ? getBrowserLocalStorage() : storageOpt;
-
+function writeJson<T>(
+  storage: StorageLike | null,
+  key: string,
+  value: T,
+): void {
   if (!storage) return;
-
   try {
-    storage.removeItem(state.config.storageKey || "am_tokens");
+    storage.setItem(key, JSON.stringify(value));
   } catch {}
+}
+
+function removeKey(storage: StorageLike | null, key: string): void {
+  if (!storage) return;
+  try {
+    storage.removeItem(key);
+  } catch {}
+}
+
+function clearAuth(config: Config) {
+  const storage = resolveStorage(config.storage);
+  removeKey(storage, config.profileStorageKey);
+  removeKey(storage, config.tokensStorageKey);
+}
+
+function writeTokensIfNewer(
+  storage: StorageLike | null,
+  key: string,
+  next: SessionTokens,
+) {
+  if (!storage) return;
+
+  const curRaw = readJson<unknown>(storage, key);
+  const cur = isSessionTokens(curRaw) ? curRaw : null;
+
+  if (curRaw !== null && !cur) removeKey(storage, key);
+  if (cur && cur.expiresAt >= next.expiresAt) return;
+
+  writeJson(storage, key, next);
+}
+
+function writeProfileIfNewer(
+  storage: StorageLike | null,
+  key: string,
+  next: SessionProfile,
+) {
+  if (!storage) return;
+
+  const curRaw = readJson<unknown>(storage, key);
+  const cur = isSessionProfile(curRaw) ? curRaw : null;
+
+  if (curRaw !== null && !cur) removeKey(storage, key);
+  if (cur && cur.lastUpdatedAt >= next.lastUpdatedAt) return;
+
+  writeJson(storage, key, next);
+}
+
+function isSessionTokens(x: any): x is SessionTokens {
+  return (
+    !!x &&
+    typeof x.accessToken === "string" &&
+    typeof x.refreshToken === "string" &&
+    typeof x.expiresAt === "number" &&
+    typeof x.expiresIn === "number" &&
+    x.tokenType === "Bearer"
+  );
+}
+
+function isSessionProfile(x: any): x is SessionProfile {
+  return (
+    !!x &&
+    typeof x.id === "string" &&
+    typeof x.accountId === "string" &&
+    typeof x.status === "string" &&
+    typeof x.lastUpdatedAt === "number" &&
+    (typeof x.identity === "object" || x.identity === null)
+  );
 }
 
 function getState(session: AuthSession): State {
@@ -210,6 +251,9 @@ const defaultConfig: Config = {
   fetchFn: defaultFetchFn(),
   baseUrl: "https://api.accountmaker.com",
   earlyRefreshMs: MINUTE_MS,
+  storage: null,
+  tokensStorageKey: "am_tokens",
+  profileStorageKey: "am_profile",
 };
 
 function isProblemJson(res: Response): boolean {
@@ -231,13 +275,27 @@ async function readJsonSafe(res: Response): Promise<unknown> {
   }
 }
 
-function toGenericProblem(res: Response, detail?: string): ProblemDetails {
+function toGenericProblem(res: Response, detail?: unknown): ProblemDetails {
   return {
     type: "about:blank",
     title: res.statusText || "Request failed",
     status: res.status,
-    detail,
+    detail: typeof detail === "string" ? detail : undefined,
   };
+}
+
+function getProblemJson(res: Response, json: any): ProblemDetails {
+  if (
+    isProblemJson(res) &&
+    json &&
+    typeof json === "object" &&
+    typeof json.type === "string" &&
+    typeof json.title === "string" &&
+    typeof json.status === "number"
+  ) {
+    return json as ProblemDetails;
+  }
+  return toGenericProblem(res, json);
 }
 
 const handleResponse = async (res: Response) => {
@@ -245,24 +303,15 @@ const handleResponse = async (res: Response) => {
     return;
   }
 
-  const raw = await readJsonSafe(res);
-  const json = camelCaseObj(raw);
+  const json = camelCaseObj(await readJsonSafe(res));
 
   if (!res.ok) {
-    if (isProblemJson(res) && json && typeof json === "object") {
-      throw new AuthError(json as ProblemDetails);
-    }
-    throw new AuthError(
-      toGenericProblem(res, typeof raw === "string" ? raw : undefined),
-    );
+    throw new AuthError(getProblemJson(res, json));
   }
 
   return json;
 };
 
-/**
- * Unauthenticated GET request.
- */
 const unauthGet = async (
   { fetchFn, baseUrl }: Config,
   path: string,
@@ -281,9 +330,6 @@ const unauthGet = async (
   return handleResponse(res);
 };
 
-/**
- * Unauthenticated POST request
- */
 const unauthPost = async (
   { fetchFn, baseUrl }: Config,
   path: string,
@@ -300,6 +346,115 @@ const unauthPost = async (
   return handleResponse(res);
 };
 
+/**
+ * Fetch with Authorization header.
+ *
+ * Returns the response as JSON. Throws AuthError on non-2xx responses.
+ * @throws AuthError
+ */
+const authFetch = async (
+  state: State,
+  url: string | URL,
+  init: RequestInit = {},
+) => {
+  const res = await state.config.fetchFn(url, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      Authorization: `Bearer ${state.tokens.accessToken}`,
+    },
+  });
+
+  return handleResponse(res);
+};
+
+const isExpired = (state: State): boolean => {
+  const early = Math.min(
+    Math.max(state.config.earlyRefreshMs, 0),
+    5 * MINUTE_MS,
+  );
+  return Date.now() >= state.tokens.expiresAt - early;
+};
+
+const refresh = async (state: State): Promise<void> => {
+  if (state.cleared) return;
+
+  if (!state.refreshPromise) {
+    state.refreshPromise = doRefresh(state);
+  }
+
+  try {
+    await state.refreshPromise;
+  } finally {
+    state.refreshPromise = null;
+  }
+};
+
+const isUnauthenticatedAuthError = (e: any): e is AuthError => {
+  return e instanceof AuthError && e.status === 401;
+};
+
+/**
+ * Fetch with automatic token refresh.
+ *
+ * If the access token is expired, it will be refreshed before making the request. The
+ * Authorization header will be set with the current access token.
+ *
+ * Returns the response as JSON. Throws AuthError on non-2xx responses.
+ *
+ * @throws AuthError
+ */
+const authFetchWithRefresh = async (
+  state: State,
+  url: string | URL,
+  init: RequestInit = {},
+) => {
+  if (isExpired(state)) {
+    await refresh(state);
+  }
+
+  try {
+    return await authFetch(state, url, init);
+  } catch (e) {
+    // Only retry on "401 Unauthenticated" errors.
+    if (!isUnauthenticatedAuthError(e)) {
+      throw e;
+    }
+    // Do not retry if the session was cleared.
+    if (state.cleared) {
+      throw e;
+    }
+
+    try {
+      // Attempt to refresh the token. Will throw if refresh fails.
+      // Exception case 1) Another 401 due to expired token, allow error to propagate.
+      // Exception case 2) Internet connection is down, allow error to propagate.
+      // Success case 3) Refresh actually gets a new access token, try request again.
+      await refresh(state);
+
+      // Retry again since the refresh  succeeded.
+      return await authFetch(state, url, init);
+    } catch (e2) {
+      // Notify unauthenticated handler if provided.
+      if (
+        state.config.onUnauthenticated &&
+        !state.cleared &&
+        isUnauthenticatedAuthError(e2)
+      ) {
+        try {
+          await state.config.onUnauthenticated(e2);
+        } catch {}
+      }
+      throw e2;
+    }
+  }
+};
+
+/** * Authenticated GET request
+ *
+ * Returns the body parsed as JSON. Throws AuthError on non-2xx responses.
+ * @throws AuthError
+ */
 const authGet = async (
   state: State,
   path: string,
@@ -310,20 +465,19 @@ const authGet = async (
   ).toString();
   const baseUrl = state.config.baseUrl;
   const url = qs ? `${baseUrl}${path}?${qs}` : `${baseUrl}${path}`;
-  const res = await authFetch(state, url, {
+  return await authFetchWithRefresh(state, url, {
     method: "GET",
     headers: {
       Accept: "application/json",
     },
   });
-  return handleResponse(res);
 };
 
 /**
  * Authenticated POST request
  *
- * The access token is included in the Authorization header. The clientId is not
- * included in the body since the access token already identifies the client.
+ * Returns the body parsed as JSON. Throws AuthError on non-2xx responses.
+ * @throws AuthError
  */
 const authPost = async (
   state: State,
@@ -331,7 +485,7 @@ const authPost = async (
   body: Record<string, unknown>,
 ) => {
   const baseUrl = state.config.baseUrl;
-  const res = await authFetch(state, `${baseUrl}${path}`, {
+  return await authFetchWithRefresh(state, `${baseUrl}${path}`, {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -339,22 +493,21 @@ const authPost = async (
     },
     body: JSON.stringify(snakeCaseObj(body)),
   });
-
-  return handleResponse(res);
 };
 
-const authFetch = (
-  state: State,
-  url: string | URL,
-  init: RequestInit = {},
-): Promise<Response> => {
-  return state.config.fetchFn(url, {
-    ...init,
-    headers: {
-      ...(init.headers || {}),
-      Authorization: `Bearer ${state.tokens.accessToken}`,
-    },
-  });
+const toSessionTokens = (tokens: any): SessionTokens => {
+  const expiresIn = typeof tokens.expiresIn === "number" ? tokens.expiresIn : 0;
+  return {
+    ...tokens,
+    expiresAt: Date.now() + expiresIn * 1000,
+  };
+};
+
+const toSessionProfile = (profile: any): SessionProfile => {
+  return {
+    ...profile,
+    lastUpdatedAt: Date.now(),
+  };
 };
 
 async function doRefresh(state: State): Promise<void> {
@@ -371,74 +524,84 @@ async function doRefresh(state: State): Promise<void> {
     ),
   });
 
-  const json = await handleResponse(res);
-  state.tokens = toSessionTokens(json);
-  persistTokens(state);
-  await state.config.onRefresh?.(state.tokens);
+  const tokens = toSessionTokens(await handleResponse(res));
+  state.tokens = tokens;
+
+  const storage = resolveStorage(state.config.storage);
+  writeTokensIfNewer(storage, state.config.tokensStorageKey, tokens);
+
+  await state.config.onRefresh?.(tokens);
 }
 
-const toSessionTokens = (tokens: ResponseTokens): SessionTokens => {
-  return {
-    ...tokens,
-    expiresAt: Date.now() + tokens.expiresIn * 1000,
-  };
-};
+async function doRefetchProfile(state: State): Promise<void> {
+  const profile = toSessionProfile(await authGet(state, "/auth/me", {}));
+  state.profile = profile;
 
-const handleAuthenticationResponse = (
-  json: AuthenticationResponse,
-): AuthenticationResult => {
+  const storage = resolveStorage(state.config.storage);
+  writeProfileIfNewer(storage, state.config.profileStorageKey, profile);
+
+  await state.config.onProfileRefetch?.(profile);
+}
+
+const handleAuthenticationResponse = (json: any): Authentication => {
   return {
     tokens: toSessionTokens(json.tokens),
-    profile: json.profile,
+    profile: toSessionProfile(json.profile),
   };
 };
 
 export class AuthSession {
-  // private tokens: SessionTokens;
-  // private config: Config;
-  // private lastUpdated: Date;
-  // private refreshPromise: Promise<void> | null = null;
+  constructor(initial: Authentication, config: Partial<Config>) {
+    const merged = { ...defaultConfig, ...config } as Config;
 
-  constructor(tokens: SessionTokens, config: Partial<Config>) {
-    setState(this, {
-      tokens,
-      config: {
-        ...defaultConfig,
-        ...config,
-      } as Config,
+    const state: State = {
+      ...initial,
+      config: merged,
       refreshPromise: null,
+      profilePromise: null,
       cleared: false,
-    });
+    };
 
-    persistTokensIfNewer(getState(this));
+    setState(this, state);
+
+    const storage = resolveStorage(merged.storage);
+    writeTokensIfNewer(storage, merged.tokensStorageKey, state.tokens);
+
+    if (state.profile) {
+      // similar helper for profile
+      writeProfileIfNewer(storage, merged.profileStorageKey, state.profile);
+    }
   }
 
   static restoreSession(config: Partial<Config> = {}): AuthSession | null {
     const merged = { ...defaultConfig, ...config } as Config;
-
-    const storage =
-      merged.storage === "localStorage"
-        ? getBrowserLocalStorage()
-        : (merged.storage ?? null);
-
+    const storage = resolveStorage(merged.storage);
     if (!storage) return null;
 
-    try {
-      const key = merged.storageKey || "am_tokens";
-      const raw = storage.getItem(key);
-      if (!raw) return null;
-      const tokens = JSON.parse(raw) as SessionTokens;
-      if (!tokens?.accessToken || !tokens?.refreshToken || !tokens?.expiresAt)
-        return null;
-      return new AuthSession(tokens, merged);
-    } catch {
+    const tokensRaw = readJson<unknown>(storage, merged.tokensStorageKey);
+    const tokens = isSessionTokens(tokensRaw) ? tokensRaw : null;
+
+    if (!tokens) {
+      if (tokensRaw !== null) removeKey(storage, merged.tokensStorageKey);
+      // avoid ghost profile
+      removeKey(storage, merged.profileStorageKey);
       return null;
     }
+
+    const profileRaw = readJson<unknown>(storage, merged.profileStorageKey);
+    const profile = isSessionProfile(profileRaw) ? profileRaw : null;
+
+    if (profileRaw !== null && !profile) {
+      // schema drift or corrupted profile data
+      removeKey(storage, merged.profileStorageKey);
+    }
+
+    return new AuthSession({ tokens, profile }, merged);
   }
 
   clear(): void {
     const state = getState(this);
-    clearPersistedTokens(state);
+    clearAuth(state.config);
     state.cleared = true;
   }
 
@@ -460,13 +623,20 @@ export class AuthSession {
   get expiresAt(): Date {
     return new Date(getState(this).tokens.expiresAt);
   }
-
-  toJSON(): SessionTokens {
-    return { ...getState(this).tokens };
+  get profile(): SessionProfile | null {
+    return getState(this).profile;
   }
 
-  static fromJSON(tokens: SessionTokens, config: Partial<Config>): AuthSession {
-    return new AuthSession(tokens, config);
+  toJSON(): Authentication {
+    const state = getState(this);
+    return { tokens: state.tokens, profile: state.profile };
+  }
+
+  static fromJSON(
+    initial: Authentication,
+    config: Partial<Config>,
+  ): AuthSession {
+    return new AuthSession(initial, config);
   }
 
   isExpired(): boolean {
@@ -484,39 +654,28 @@ export class AuthSession {
    * Authorization header will be set with the current access token.
    */
   async fetch(url: string | URL, init: RequestInit = {}) {
-    if (this.isExpired()) {
-      await this.refresh();
-    }
-
-    const state = getState(this);
-
-    let res = await authFetch(state, url, init);
-    if (res.status !== 401) return res;
-
-    await this.refresh();
-
-    res = await authFetch(state, url, init);
-    if (res.status !== 401) return res;
-
-    await state.config.onUnauthenticated?.();
-    return res;
+    return authFetchWithRefresh(getState(this), url, init);
   }
 
   async refresh(): Promise<void> {
+    return refresh(getState(this));
+  }
+
+  async refetchProfile(): Promise<void> {
     const state = getState(this);
     if (state.cleared) {
       // silently do nothing
       return;
     }
 
-    if (!state.refreshPromise) {
-      state.refreshPromise = doRefresh(state);
+    if (!state.profilePromise) {
+      state.profilePromise = doRefetchProfile(state);
     }
 
     try {
-      await state.refreshPromise;
+      await state.profilePromise;
     } finally {
-      state.refreshPromise = null;
+      state.profilePromise = null;
     }
   }
 
@@ -524,12 +683,8 @@ export class AuthSession {
     await authPost(getState(this), "/auth/send-verification-email", {});
   }
 
-  async me(): Promise<SessionProfile> {
-    return await authGet(getState(this), "/auth/me", {});
-  }
-
   async user(id: UserId): Promise<UserResource> {
-    return await authGet(getState(this), `/auth/user/${id}`, {});
+    return authGet(getState(this), `/auth/user/${id}`, {});
   }
 }
 
@@ -541,14 +696,14 @@ export class Am {
   }
 
   static createAuthSession(
-    tokens: SessionTokens,
+    initial: Authentication,
     config?: Partial<Config>,
   ): AuthSession {
-    return new Am(config).createAuthSession(tokens);
+    return new Am(config).createAuthSession(initial);
   }
 
-  createAuthSession(tokens: SessionTokens): AuthSession {
-    return new AuthSession(tokens, this.options);
+  createAuthSession(initial: Authentication): AuthSession {
+    return new AuthSession(initial, this.options);
   }
 
   static async acceptInvite(
@@ -557,15 +712,18 @@ export class Am {
       token: string;
     },
     config?: Partial<Config>,
-  ) {
+  ): Promise<AuthSession> {
     return new Am(config).acceptInvite(query);
   }
 
   async acceptInvite(query: {
     clientId: ClientId;
     token: string;
-  }): Promise<AuthenticationResult> {
-    return await unauthGet(this.options, "/auth/accept-invite", query);
+  }): Promise<AuthSession> {
+    const initial = handleAuthenticationResponse(
+      await unauthGet(this.options, "/auth/accept-invite", query),
+    );
+    return new AuthSession(initial, this.options);
   }
 
   static async checkEmail(
@@ -611,41 +769,45 @@ export class Am {
     return unauthGet(this.options, "/auth/csrf-token");
   }
 
-  static async login(
+  static async signIn(
     body: {
       email: string;
       password: string;
       csrfToken?: string;
     },
     config?: Partial<Config>,
-  ): Promise<AuthenticationResult> {
-    return new Am(config).login(body);
+  ): Promise<AuthSession> {
+    return new Am(config).signIn(body);
   }
 
-  async login(body: {
+  async signIn(body: {
     email: string;
     password: string;
     csrfToken?: string;
-  }): Promise<AuthenticationResult> {
-    return handleAuthenticationResponse(
+  }): Promise<AuthSession> {
+    const initial = handleAuthenticationResponse(
       await unauthPost(this.options, "/auth/login", body),
     );
+
+    return new AuthSession(initial, this.options);
   }
 
-  static async tokenLogin(
+  static async signInWithToken(
     token: string,
     config?: Partial<Config>,
-  ): Promise<AuthenticationResult> {
+  ): Promise<AuthSession> {
     return new Am(config).tokenLogin(token);
   }
 
-  async tokenLogin(token: string): Promise<AuthenticationResult> {
+  async tokenLogin(token: string): Promise<AuthSession> {
     const options = this.options;
-    return handleAuthenticationResponse(
+    const initial = handleAuthenticationResponse(
       await unauthGet(options, "/auth/token-login", {
         token,
       }),
     );
+
+    return new AuthSession(initial, options);
   }
 
   static async refresh(
@@ -670,7 +832,7 @@ export class Am {
       csrfToken?: string;
     },
     config?: Partial<Config>,
-  ): Promise<AuthenticationResult> {
+  ): Promise<AuthSession> {
     return new Am(config).register(body);
   }
 
@@ -678,10 +840,12 @@ export class Am {
     email: string;
     password: string;
     csrfToken?: string;
-  }): Promise<AuthenticationResult> {
-    return handleAuthenticationResponse(
+  }): Promise<AuthSession> {
+    const initial = handleAuthenticationResponse(
       await unauthPost(this.options, "/auth/register", body),
     );
+
+    return new AuthSession(initial, this.options);
   }
 
   static async resetPassword(

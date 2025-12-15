@@ -1,6 +1,6 @@
 export { Am, AuthSession, AuthError } from "./auth";
 export type {
-  AuthenticationResult,
+  Authentication,
   ClientId,
   EmailCheckStatus,
   LoginMethod,

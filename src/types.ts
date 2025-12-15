@@ -85,29 +85,17 @@ export type SessionTokens = {
   expiresAt: number;
 };
 
-export type ResponseTokens = {
-  accessToken: string;
-  refreshToken: string;
-  tokenType: "Bearer";
-  expiresIn: number;
-  idToken?: string;
-};
-
 export type SessionProfile = UserResource & {
-  identity: UserIdentity;
+  identity: UserIdentity | null;
   emailCredentials: EmailCredential[];
   memberships: Membership[];
   activeMembership: Membership | null;
+  lastUpdatedAt: number;
 };
 
-export type AuthenticationResponse = {
-  tokens: ResponseTokens;
-  profile: SessionProfile;
-};
-
-export type AuthenticationResult = {
+export type Authentication = {
   tokens: SessionTokens;
-  profile: SessionProfile;
+  profile: SessionProfile | null;
 };
 
 export type EmailCheckStatus = "active" | "inactive";
