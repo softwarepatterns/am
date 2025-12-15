@@ -1,4 +1,5 @@
 import type {
+  AuthenticationResponse,
   AuthenticationResult,
   ClientId,
   EmailCheckStatus,
@@ -6,16 +7,115 @@ import type {
   ProblemDetails,
   SessionProfile,
   SessionTokens,
+  ResponseTokens,
   UserId,
   UserResource,
+  StorageLike,
 } from "./types";
 
 const MINUTE_MS = 60 * 1000;
+const STATE = Symbol("state");
 
 type FetchFn = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
+
+type Config = {
+  fetchFn: FetchFn;
+  baseUrl: string;
+  earlyRefreshMs: number;
+  onRefresh?: (tokens: SessionTokens) => void | Promise<void>;
+  onUnauthenticated?: () => void | Promise<void>;
+  storage?: StorageLike | "localStorage" | null;
+  storageKey?: string;
+};
+
+type State = {
+  tokens: SessionTokens;
+  config: Config;
+  refreshPromise: Promise<void> | null;
+  cleared: boolean;
+};
+
+function getBrowserLocalStorage(): StorageLike | null {
+  try {
+    if (typeof window === "undefined") return null;
+    if (!window.localStorage) return null;
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readTokens(state: State): SessionTokens | null {
+  const storage =
+    state.config.storage === "localStorage"
+      ? getBrowserLocalStorage()
+      : (state.config.storage ?? null);
+
+  if (!storage) return null;
+
+  try {
+    const key = state.config.storageKey || "am_tokens";
+    const raw = storage.getItem(key);
+    return raw ? (JSON.parse(raw) as SessionTokens) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistTokens(state: State) {
+  const storageOpt = state.config.storage;
+  if (!storageOpt) return;
+
+  const storage =
+    storageOpt === "localStorage" ? getBrowserLocalStorage() : storageOpt;
+
+  if (!storage) return;
+
+  try {
+    const key = state.config.storageKey || "am_tokens";
+    storage.setItem(key, JSON.stringify(state.tokens));
+  } catch {
+    // ignore
+  }
+}
+
+function persistTokensIfNewer(state: State) {
+  if (!state.config.storage) return;
+
+  const existing = readTokens(state);
+  if (existing && existing.expiresAt >= state.tokens.expiresAt) return;
+
+  try {
+    persistTokens(state);
+  } catch {
+    // swallow storage failures
+  }
+}
+
+function clearPersistedTokens(state: State) {
+  const storageOpt = state.config.storage;
+  if (!storageOpt) return;
+
+  const storage =
+    storageOpt === "localStorage" ? getBrowserLocalStorage() : storageOpt;
+
+  if (!storage) return;
+
+  try {
+    storage.removeItem(state.config.storageKey || "am_tokens");
+  } catch {}
+}
+
+function getState(session: AuthSession): State {
+  return (session as any)[STATE] as State;
+}
+
+function setState(session: AuthSession, state: State) {
+  (session as any)[STATE] = state;
+}
 
 function camelCaseStr(str: string): string {
   return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -95,11 +195,6 @@ export class AuthError extends Error {
   }
 }
 
-type Config = {
-  fetchFn: FetchFn;
-  baseUrl: string;
-};
-
 function defaultFetchFn(): FetchFn {
   const f = (globalThis as any).fetch as FetchFn | undefined;
   if (typeof f === "function") return f;
@@ -111,9 +206,10 @@ function defaultFetchFn(): FetchFn {
   };
 }
 
-const defaultConfig = {
+const defaultConfig: Config = {
   fetchFn: defaultFetchFn(),
   baseUrl: "https://api.accountmaker.com",
+  earlyRefreshMs: MINUTE_MS,
 };
 
 function isProblemJson(res: Response): boolean {
@@ -196,6 +292,7 @@ const unauthPost = async (
   const res = await fetchFn(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
+      Accept: "application/json",
       "Content-Type": "application/json",
     },
     body: JSON.stringify(snakeCaseObj(body)),
@@ -204,20 +301,19 @@ const unauthPost = async (
 };
 
 const authGet = async (
-  { accessToken }: AuthSession,
-  { fetchFn, baseUrl }: Config,
+  state: State,
   path: string,
   query: Record<string, string> = {},
 ) => {
   const qs = new URLSearchParams(
     snakeCaseObj(query) as Record<string, string>,
   ).toString();
+  const baseUrl = state.config.baseUrl;
   const url = qs ? `${baseUrl}${path}?${qs}` : `${baseUrl}${path}`;
-  const res = await fetchFn(url, {
+  const res = await authFetch(state, url, {
     method: "GET",
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${accessToken}`,
     },
   });
   return handleResponse(res);
@@ -230,16 +326,16 @@ const authGet = async (
  * included in the body since the access token already identifies the client.
  */
 const authPost = async (
-  { accessToken }: AuthSession,
-  { fetchFn, baseUrl }: Config,
+  state: State,
   path: string,
   body: Record<string, unknown>,
 ) => {
-  const res = await fetchFn(`${baseUrl}${path}`, {
+  const baseUrl = state.config.baseUrl;
+  const res = await authFetch(state, `${baseUrl}${path}`, {
     method: "POST",
     headers: {
+      Accept: "application/json",
       "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(snakeCaseObj(body)),
   });
@@ -247,44 +343,138 @@ const authPost = async (
   return handleResponse(res);
 };
 
+const authFetch = (
+  state: State,
+  url: string | URL,
+  init: RequestInit = {},
+): Promise<Response> => {
+  return state.config.fetchFn(url, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      Authorization: `Bearer ${state.tokens.accessToken}`,
+    },
+  });
+};
+
+async function doRefresh(state: State): Promise<void> {
+  const { fetchFn, baseUrl } = state.config;
+
+  const res = await fetchFn(`${baseUrl}/auth/refresh`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(
+      snakeCaseObj({ refreshToken: state.tokens.refreshToken }),
+    ),
+  });
+
+  const json = await handleResponse(res);
+  state.tokens = toSessionTokens(json);
+  persistTokens(state);
+  await state.config.onRefresh?.(state.tokens);
+}
+
+const toSessionTokens = (tokens: ResponseTokens): SessionTokens => {
+  return {
+    ...tokens,
+    expiresAt: Date.now() + tokens.expiresIn * 1000,
+  };
+};
+
+const handleAuthenticationResponse = (
+  json: AuthenticationResponse,
+): AuthenticationResult => {
+  return {
+    tokens: toSessionTokens(json.tokens),
+    profile: json.profile,
+  };
+};
+
 export class AuthSession {
-  private tokens: SessionTokens;
-  private config: Config;
-  private lastUpdated: Date;
+  // private tokens: SessionTokens;
+  // private config: Config;
+  // private lastUpdated: Date;
+  // private refreshPromise: Promise<void> | null = null;
 
   constructor(tokens: SessionTokens, config: Partial<Config>) {
-    this.tokens = tokens;
-    this.config = {
-      ...defaultConfig,
-      ...config,
-    } as Config;
-    this.lastUpdated = new Date();
+    setState(this, {
+      tokens,
+      config: {
+        ...defaultConfig,
+        ...config,
+      } as Config,
+      refreshPromise: null,
+      cleared: false,
+    });
+
+    persistTokensIfNewer(getState(this));
+  }
+
+  static restoreSession(config: Partial<Config> = {}): AuthSession | null {
+    const merged = { ...defaultConfig, ...config } as Config;
+
+    const storage =
+      merged.storage === "localStorage"
+        ? getBrowserLocalStorage()
+        : (merged.storage ?? null);
+
+    if (!storage) return null;
+
+    try {
+      const key = merged.storageKey || "am_tokens";
+      const raw = storage.getItem(key);
+      if (!raw) return null;
+      const tokens = JSON.parse(raw) as SessionTokens;
+      if (!tokens?.accessToken || !tokens?.refreshToken || !tokens?.expiresAt)
+        return null;
+      return new AuthSession(tokens, merged);
+    } catch {
+      return null;
+    }
+  }
+
+  clear(): void {
+    const state = getState(this);
+    clearPersistedTokens(state);
+    state.cleared = true;
   }
 
   get accessToken(): string {
-    return this.tokens.accessToken;
+    return getState(this).tokens.accessToken;
   }
   get refreshToken(): string {
-    return this.tokens.refreshToken;
+    return getState(this).tokens.refreshToken;
   }
   get idToken(): string | undefined {
-    return this.tokens.idToken;
+    return getState(this).tokens.idToken;
   }
   get tokenType(): "Bearer" {
-    return this.tokens.tokenType;
+    return getState(this).tokens.tokenType;
   }
   get expiresIn(): number {
-    return this.tokens.expiresIn;
-  }
-  get lastUpdatedAt(): Date {
-    return this.lastUpdated;
+    return getState(this).tokens.expiresIn;
   }
   get expiresAt(): Date {
-    return new Date(this.lastUpdated.getTime() + this.expiresIn * 1000);
+    return new Date(getState(this).tokens.expiresAt);
+  }
+
+  toJSON(): SessionTokens {
+    return { ...getState(this).tokens };
+  }
+
+  static fromJSON(tokens: SessionTokens, config: Partial<Config>): AuthSession {
+    return new AuthSession(tokens, config);
   }
 
   isExpired(): boolean {
-    return Date.now() >= this.expiresAt.getTime() - MINUTE_MS; // 1 minute early
+    const early = Math.min(
+      Math.max(getState(this).config.earlyRefreshMs, 0),
+      5 * MINUTE_MS,
+    );
+    return Date.now() >= this.expiresAt.getTime() - early;
   }
 
   /**
@@ -293,49 +483,53 @@ export class AuthSession {
    * If the access token is expired, it will be refreshed before making the request. The
    * Authorization header will be set with the current access token.
    */
-  async fetch(url: string | URL | Request, init: RequestInit = {}) {
-    const { fetchFn } = this.config;
-
-    // if expired, refresh
+  async fetch(url: string | URL, init: RequestInit = {}) {
     if (this.isExpired()) {
       await this.refresh();
     }
 
-    return await fetchFn(url, {
-      ...init,
-      headers: {
-        ...(init.headers || {}),
-        Authorization: `Bearer ${this.tokens.accessToken}`,
-      },
-    });
+    const state = getState(this);
+
+    let res = await authFetch(state, url, init);
+    if (res.status !== 401) return res;
+
+    await this.refresh();
+
+    res = await authFetch(state, url, init);
+    if (res.status !== 401) return res;
+
+    await state.config.onUnauthenticated?.();
+    return res;
   }
 
   async refresh(): Promise<void> {
-    const { fetchFn, baseUrl } = this.config;
-    const res = await fetchFn(`${baseUrl}/auth/refresh`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(
-        snakeCaseObj({ refreshToken: this.tokens.refreshToken }),
-      ),
-    });
-    const json = await handleResponse(res);
-    this.tokens = json as SessionTokens;
-    this.lastUpdated = new Date();
+    const state = getState(this);
+    if (state.cleared) {
+      // silently do nothing
+      return;
+    }
+
+    if (!state.refreshPromise) {
+      state.refreshPromise = doRefresh(state);
+    }
+
+    try {
+      await state.refreshPromise;
+    } finally {
+      state.refreshPromise = null;
+    }
   }
 
   async sendVerificationEmail(): Promise<void> {
-    await authPost(this, this.config, "/auth/send-verification-email", {});
+    await authPost(getState(this), "/auth/send-verification-email", {});
   }
 
   async me(): Promise<SessionProfile> {
-    return await authGet(this, this.config, "/auth/me", {});
+    return await authGet(getState(this), "/auth/me", {});
   }
 
   async user(id: UserId): Promise<UserResource> {
-    return await authGet(this, this.config, `/auth/user/${id}`, {});
+    return await authGet(getState(this), `/auth/user/${id}`, {});
   }
 }
 
@@ -433,7 +627,9 @@ export class Am {
     password: string;
     csrfToken?: string;
   }): Promise<AuthenticationResult> {
-    return await unauthPost(this.options, "/auth/login", body);
+    return handleAuthenticationResponse(
+      await unauthPost(this.options, "/auth/login", body),
+    );
   }
 
   static async tokenLogin(
@@ -445,9 +641,11 @@ export class Am {
 
   async tokenLogin(token: string): Promise<AuthenticationResult> {
     const options = this.options;
-    return await unauthGet(options, "/auth/token-login", {
-      token,
-    });
+    return handleAuthenticationResponse(
+      await unauthGet(options, "/auth/token-login", {
+        token,
+      }),
+    );
   }
 
   static async refresh(
@@ -458,9 +656,11 @@ export class Am {
   }
 
   async refresh(refreshToken: string): Promise<SessionTokens> {
-    return await unauthPost(this.options, "/auth/refresh", {
-      refreshToken,
-    });
+    return toSessionTokens(
+      await unauthPost(this.options, "/auth/refresh", {
+        refreshToken,
+      }),
+    );
   }
 
   static async register(
@@ -479,7 +679,9 @@ export class Am {
     password: string;
     csrfToken?: string;
   }): Promise<AuthenticationResult> {
-    return await unauthPost(this.options, "/auth/register", body);
+    return handleAuthenticationResponse(
+      await unauthPost(this.options, "/auth/register", body),
+    );
   }
 
   static async resetPassword(

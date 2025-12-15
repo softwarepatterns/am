@@ -82,6 +82,15 @@ export type SessionTokens = {
   tokenType: "Bearer";
   expiresIn: number;
   idToken?: string;
+  expiresAt: number;
+};
+
+export type ResponseTokens = {
+  accessToken: string;
+  refreshToken: string;
+  tokenType: "Bearer";
+  expiresIn: number;
+  idToken?: string;
 };
 
 export type SessionProfile = UserResource & {
@@ -91,10 +100,21 @@ export type SessionProfile = UserResource & {
   activeMembership: Membership | null;
 };
 
+export type AuthenticationResponse = {
+  tokens: ResponseTokens;
+  profile: SessionProfile;
+};
+
 export type AuthenticationResult = {
-  session: SessionTokens;
+  tokens: SessionTokens;
   profile: SessionProfile;
 };
 
 export type EmailCheckStatus = "active" | "inactive";
 export type LoginMethod = "email_password" | "magic_link";
+
+export type StorageLike = {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+};
