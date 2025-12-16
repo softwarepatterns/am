@@ -208,6 +208,50 @@ function snakeCaseObj(input: unknown): any {
   return result;
 }
 
+/**
+ * Error type for authentication-related failures.
+ *
+ * Always thrown on non-2xx responses from auth endpoints. Contains structured ProblemDetails
+ * from the server when available.
+ *
+ * Most 400 errors will also contain `invalidParams` for parameters that caused
+ * the error, which can be used to display field-level validation messages.
+ *
+ * Note that network errors, timeouts, etc. will throw other Error types (e.g. TypeError) unrelated
+ * to AuthError.
+ *
+ * Note that HTTP error codes are distinctly:
+ * - 400: Client error (bad request, invalid input, etc.)
+ * - 401: Unauthenticated (we don't know who you are)
+ * - 402: Payment required (e.g. billing issue)
+ * - 403: Unauthorized (we know who you are, but you don't have permission)
+ * - 404: Not found
+ * - 409: Conflict (email already registered, user already invited, etc.)
+ * - 429: Too many requests (rate limiting)
+ * - 500: Internal server error (server's fault)
+ *
+ * Also note that the `type` field often contains a URI that points to documentation about the
+ * specific error type, including how to resolve it, code samples, and links to the RFCs or other
+ * standards that define the error.
+ *
+ * @example
+ * ```ts
+ * try {
+ *  const session = await am.signIn({ email: 'test@example.com', password: 'password123' });
+ * } catch (e) {
+ *  if (e instanceof AuthError) {
+ *   console.error("Authentication failed:", e.title);
+ *   if (e.invalidParams) {
+ *    for (const param of e.invalidParams) {
+ *      console.error(` - Invalid parameter: ${param.path} (${param.type})`);
+ *     }
+ *    }
+ *   } else {
+ *    console.error("Unexpected error:", e);
+ *   }
+ * }
+ * ```
+ */
 export class AuthError extends Error {
   public readonly problem: ProblemDetails;
 
@@ -550,6 +594,17 @@ const handleAuthenticationResponse = (json: any): Authentication => {
   };
 };
 
+/**
+ * You receive an AuthSession after successful sign-in/register/etc.
+ *
+ * It contains the current access token, user profile, and methods to perform authorized
+ * requests.
+ *
+ * Features:
+ * - session.fetch() will always use a valid access token (refreshing automatically)
+ * - All non-2xx responses throw AuthError
+ * - Tokens and profile are automatically persisted to storage (if configured)
+ */
 export class AuthSession {
   constructor(initial: Authentication, config: Partial<Config>) {
     const merged = { ...defaultConfig, ...config } as Config;
@@ -573,6 +628,20 @@ export class AuthSession {
     }
   }
 
+  /**
+   * Restores an AuthSession from persisted storage. Returns null if no valid session
+   * is found.
+   *
+   * @example
+   * ```ts
+   * const session = AuthSession.restoreSession();
+   * if (session) {
+   *   console.log("Restored session for user:", session.profile);
+   * } else {
+   *   console.log("No valid session found.");
+   * }
+   * ```
+   */
   static restoreSession(config: Partial<Config> = {}): AuthSession | null {
     const merged = { ...defaultConfig, ...config } as Config;
     const storage = resolveStorage(merged.storage);
@@ -599,31 +668,33 @@ export class AuthSession {
     return new AuthSession({ tokens, profile }, merged);
   }
 
+  /**
+   * Removes all persisted data (tokens, profile) from storage, and prevents future
+   * refreshs of token and profile data. Does NOT clear current token or profile data from the
+   * session memory, but effectively deactivates the session for future use.
+   */
   clear(): void {
     const state = getState(this);
     clearAuth(state.config);
     state.cleared = true;
   }
 
-  get accessToken(): string {
+  accessToken(): string {
     return getState(this).tokens.accessToken;
   }
-  get refreshToken(): string {
+  refreshToken(): string {
     return getState(this).tokens.refreshToken;
   }
-  get idToken(): string | undefined {
+  idToken(): string | undefined {
     return getState(this).tokens.idToken;
   }
-  get tokenType(): "Bearer" {
-    return getState(this).tokens.tokenType;
-  }
-  get expiresIn(): number {
+  expiresIn(): number {
     return getState(this).tokens.expiresIn;
   }
-  get expiresAt(): Date {
+  expiresAt(): Date {
     return new Date(getState(this).tokens.expiresAt);
   }
-  get profile(): SessionProfile | null {
+  profile(): SessionProfile | null {
     return getState(this).profile;
   }
 
@@ -632,6 +703,10 @@ export class AuthSession {
     return { tokens: state.tokens, profile: state.profile };
   }
 
+  /**
+   * Creates an AuthSession from existing authentication data. Useful for restoring
+   * a session from custom storage or creating a session from custom server-provided data.
+   */
   static fromJSON(
     initial: Authentication,
     config: Partial<Config>,
@@ -639,28 +714,63 @@ export class AuthSession {
     return new AuthSession(initial, config);
   }
 
+  /**
+   * Returns true if the access token is expired or will expire soon. The
+   * "soon" threshold is configured via Config.earlyRefreshMs (default 1 minute).
+   */
   isExpired(): boolean {
-    const early = Math.min(
-      Math.max(getState(this).config.earlyRefreshMs, 0),
-      5 * MINUTE_MS,
-    );
-    return Date.now() >= this.expiresAt.getTime() - early;
+    return isExpired(getState(this));
   }
 
   /**
-   * Fetch with automatic token refresh.
+   * Perform an authenticated fetch. Used to call your own APIs with the current
+   * session's access token. Any service can validate the token against Am's public
+   * keys at https://api.accountmaker.com/.well-known/jwks.json?client_id={clientId}
    *
-   * If the access token is expired, it will be refreshed before making the request. The
-   * Authorization header will be set with the current access token.
+   * Automatically:
+   *   - Adds Authorization header
+   *   - Refreshes token if expired
+   *   - Retries once on 401 if refresh succeeds
+   *
+   * Assumes the response is JSON and parses it. Throws AuthError on non-2xx responses.
+   *
+   * If the error is a RFC 7807 Problem Details response, the AuthError.problem
+   * will contain the full details.
+   *
+   * @example
+   * ```ts
+   * const res = await session.fetch('/api/projects');
+   * const projects = await res.json();
+   * ```
+   *
+   * Throws AuthError on network errors, etc.
+   * @throws AuthError
    */
   async fetch(url: string | URL, init: RequestInit = {}) {
     return authFetchWithRefresh(getState(this), url, init);
   }
 
+  /**
+   * Refreshes the access token using the refresh token. Updates the stored tokens on
+   * success. This is called automatically by fetch() if the token is expired or close to
+   * expiring.
+   */
   async refresh(): Promise<void> {
     return refresh(getState(this));
   }
 
+  /**
+   * Refetches the user's profile from the server and updates the stored profile.
+   *
+   * @example
+   * ```ts
+   * await session.refetchProfile();
+   * console.log("Updated profile:", session.profile);
+   * ```
+   *
+   * Throws AuthError on network errors, etc.
+   * @throws AuthError
+   */
   async refetchProfile(): Promise<void> {
     const state = getState(this);
     if (state.cleared) {
@@ -679,15 +789,42 @@ export class AuthSession {
     }
   }
 
+  /**
+   * Sends a verification email to the user's primary email address. This only succeeds if
+   * called by the currently authenticated user or an account admin.
+   *
+   * Throws AuthError on network errors, etc.
+   * @throws AuthError
+   */
   async sendVerificationEmail(): Promise<void> {
     await authPost(getState(this), "/auth/send-verification-email", {});
   }
 
+  /**
+   * Fetches a user by ID.
+   *
+   * Throws AuthError on invalid user ID, network errors, etc.
+   * @throws AuthError
+   */
   async user(id: UserId): Promise<UserResource> {
     return authGet(getState(this), `/auth/user/${id}`, {});
   }
 }
 
+/**
+ * Use `Am` to perform initial sign-in, registration, password reset flows, magic links,
+ * invite acceptance, and other unauthenticated actions.
+ *
+ * Once authentication succeeds, these methods return an `AuthSession` that you use
+ * for all subsequent authenticated requests.
+ *
+ * Example:
+ * ```ts
+ * const am = new Am();
+ * const session = await am.signIn({ email: 'user@example.com', password: 'secret' });
+ * // Now use `session` for protected API calls
+ * ```
+ */
 export class Am {
   private options: Config;
 
@@ -695,6 +832,10 @@ export class Am {
     this.options = { ...defaultConfig, ...config } as Config;
   }
 
+  /**
+   * Creates an AuthSession from existing authentication data. Useful for restoring
+   * a session from custom storage or creating a session from custom server-provided data.
+   */
   static createAuthSession(
     initial: Authentication,
     config?: Partial<Config>,
@@ -702,10 +843,22 @@ export class Am {
     return new Am(config).createAuthSession(initial);
   }
 
+  /**
+   * Creates an AuthSession from existing authentication data. Useful for restoring
+   * a session from custom storage or creating a session from custom server-provided data.
+   */
   createAuthSession(initial: Authentication): AuthSession {
     return new AuthSession(initial, this.options);
   }
 
+  /**
+   * Accepts an invitation to join an account. On success, returns an AuthSession
+   * containing fresh tokens and profile. Tokens are automatically persisted (if
+   * storage is enabled).
+   *
+   * Throws AuthError on invalid or expired token, etc.
+   * @throws AuthError
+   */
   static async acceptInvite(
     query: {
       clientId: ClientId;
@@ -716,6 +869,14 @@ export class Am {
     return new Am(config).acceptInvite(query);
   }
 
+  /**
+   * Accepts an invitation to join an account. On success, returns an AuthSession
+   * containing fresh tokens and profile. Tokens are automatically persisted (if
+   * storage is enabled).
+   *
+   * Throws AuthError on invalid or expired token, etc.
+   * @throws AuthError
+   */
   async acceptInvite(query: {
     clientId: ClientId;
     token: string;
@@ -726,6 +887,15 @@ export class Am {
     return new AuthSession(initial, this.options);
   }
 
+  /**
+   * Checks the status of an email address for authentication purposes. Indicates whether the
+   * email is associated with an active account, and what login methods are preferred and
+   * available for that user. This can be used to enforce login expierences for enterprise SSO or
+   * to prefer passwordless login methods.
+   *
+   * Throws AuthError on invalid client ID, network errors, etc.
+   * @throws AuthError
+   */
   static async checkEmail(
     body: { clientId: ClientId; email: string; csrfToken?: string },
     config?: Partial<Config>,
@@ -737,6 +907,15 @@ export class Am {
     return new Am(config).checkEmail(body);
   }
 
+  /**
+   * Checks the status of an email address for authentication purposes. Indicates whether the
+   * email is associated with an active account, and what login methods are preferred and
+   * available for that user. This can be used to enforce login expierences for enterprise SSO or
+   * to prefer passwordless login methods.
+   *
+   * Throws AuthError on invalid client ID, network errors, etc.
+   * @throws AuthError
+   */
   async checkEmail(body: {
     clientId: ClientId;
     email: string;
@@ -749,28 +928,66 @@ export class Am {
     return unauthPost(this.options, "/auth/check-email", body);
   }
 
+  /**
+   * When called, sets a httpOnly CSRF session cookie. Then when rendering a form, call csrfToken()
+   * to get the signed token to include in the form. When the form is submitted, the server
+   * will verify the signed token against the session cookie. This prevents a certain class
+   * of CSRF attacks that rely on being able to read values from the target site.
+   */
   static async csrfSession(
     config?: Partial<Config>,
   ): Promise<{ csrfToken: string }> {
     return new Am(config).csrfSession();
   }
 
+  /**
+   * When called, sets a httpOnly CSRF session cookie. Then when rendering a form, call csrfToken()
+   * to get the signed token to include in the form. When the form is submitted, the server
+   * will verify the signed token against the session cookie. This prevents a certain class
+   * of CSRF attacks that rely on being able to read values from the target site.
+   */
   async csrfSession(): Promise<{ csrfToken: string }> {
     return unauthGet(this.options, "/auth/csrf-session");
   }
 
+  /**
+   * Fetches a signed CSRF token for use in forms. Call csrfSession() first to set a httpOnly CSRF
+   * session cookie, then call this method to get the signed token, then include the token in your
+   * form submissions. When the form is submitted, the server will verify the signed token against
+   * the httpOnly session cookie. This prevents a certain class of CSRF attacks that rely on being
+   * able to read values from the target site.
+   *
+   * @throws AuthError
+   */
   static async csrfToken(
     config?: Partial<Config>,
   ): Promise<{ csrfToken: string }> {
     return new Am(config).csrfToken();
   }
 
+  /**
+   * Fetches a signed CSRF token for use in forms. Call csrfSession() first to set a httpOnly CSRF
+   * session cookie, then call this method to get the signed token, then include the token in your
+   * form submissions. When the form is submitted, the server will verify the signed token against
+   * the httpOnly session cookie. This prevents a certain class of CSRF attacks that rely on being
+   * able to read values from the target site.
+   *
+   * @throws AuthError
+   */
   async csrfToken(): Promise<{ csrfToken: string }> {
     return unauthGet(this.options, "/auth/csrf-token");
   }
 
+  /**
+   * On success, returns an AuthSession containing fresh tokens and profile.
+   * Tokens are automatically persisted (if storage is enabled).
+   *
+   * Throws AuthError on invalid credentials, unverified email, etc.
+   * @throws AuthError
+   */
   static async signIn(
     body: {
+      clientId: ClientId;
       email: string;
       password: string;
       csrfToken?: string;
@@ -780,29 +997,55 @@ export class Am {
     return new Am(config).signIn(body);
   }
 
+  /**
+   * On success, returns an AuthSession containing fresh tokens and profile.
+   * Tokens are automatically persisted (if storage is enabled).
+   *
+   * Throws AuthError on invalid credentials, unverified email, etc.
+   * @throws AuthError
+   */
   async signIn(body: {
+    clientId: ClientId;
     email: string;
     password: string;
     csrfToken?: string;
   }): Promise<AuthSession> {
     const initial = handleAuthenticationResponse(
-      await unauthPost(this.options, "/auth/login", body),
+      await unauthPost(this.options, "/auth/sign-in", body),
     );
 
     return new AuthSession(initial, this.options);
   }
 
+  /**
+   * Authenticates using a one-time token (e.g., magic link or invite token).
+   *
+   * On success, returns an AuthSession containing fresh tokens and profile.
+   * Tokens are automatically persisted (if storage is enabled).
+   *
+   * Throws AuthError on invalid or expired token, etc.
+   * @throws AuthError
+   */
   static async signInWithToken(
     token: string,
     config?: Partial<Config>,
   ): Promise<AuthSession> {
-    return new Am(config).tokenLogin(token);
+    return new Am(config).signInWithToken(token);
   }
 
-  async tokenLogin(token: string): Promise<AuthSession> {
+  /**
+   * Authenticates using a one-time token (e.g., magic link or invite token).
+   *
+   * On success, returns an AuthSession containing fresh tokens and profile.
+   * Tokens are automatically persisted (if storage is enabled).
+   *
+   * Throws AuthError on invalid or expired token, etc.
+   * @throws AuthError
+   */
+  async signInWithToken(token: string): Promise<AuthSession> {
     const options = this.options;
     const initial = handleAuthenticationResponse(
-      await unauthGet(options, "/auth/token-login", {
+      await unauthGet(options, "/auth/sign-in-with-token", {
         token,
       }),
     );
@@ -810,6 +1053,14 @@ export class Am {
     return new AuthSession(initial, options);
   }
 
+  /**
+   * Manually refreshes session tokens using the provided refresh token. Does NOT
+   * persist tokens. Use AuthSession.refresh() to refresh and persist tokens in an
+   * existing session.
+   *
+   * Throws AuthError on invalid or expired refresh token, etc.
+   * @throws AuthError
+   */
   static async refresh(
     refreshToken: string,
     config?: Partial<Config>,
@@ -817,6 +1068,14 @@ export class Am {
     return new Am(config).refresh(refreshToken);
   }
 
+  /**
+   * Manually refreshes session tokens using the provided refresh token. Does NOT
+   * persist tokens. Use AuthSession.refresh() to refresh and persist tokens in an
+   * existing session.
+   *
+   * Throws AuthError on invalid or expired refresh token, etc.
+   * @throws AuthError
+   */
   async refresh(refreshToken: string): Promise<SessionTokens> {
     return toSessionTokens(
       await unauthPost(this.options, "/auth/refresh", {
@@ -825,29 +1084,52 @@ export class Am {
     );
   }
 
-  static async register(
+  /**
+   * Successful registration immediately authenticates the user and returns an
+   * AuthSession. Tokens are automatically persisted (if storage is enabled).
+   *
+   * Throws AuthError on invalid data, existing email, etc.
+   * @throws AuthError
+   */
+  static async signUp(
     body: {
+      clientId: ClientId;
       email: string;
       password: string;
       csrfToken?: string;
     },
     config?: Partial<Config>,
   ): Promise<AuthSession> {
-    return new Am(config).register(body);
+    return new Am(config).signUp(body);
   }
 
-  async register(body: {
+  /**
+   * Successful registration immediately authenticates the user and returns an
+   * AuthSession. Tokens are automatically persisted (if storage is enabled).
+   *
+   * Throws AuthError on invalid data, existing email, etc.
+   * @throws AuthError
+   */
+  async signUp(body: {
+    clientId: ClientId;
     email: string;
     password: string;
     csrfToken?: string;
   }): Promise<AuthSession> {
     const initial = handleAuthenticationResponse(
-      await unauthPost(this.options, "/auth/register", body),
+      await unauthPost(this.options, "/auth/sign-up", body),
     );
 
     return new AuthSession(initial, this.options);
   }
 
+  /**
+   * Completes a password reset using the token received via email. On success,
+   * the user's password is updated.
+   *
+   * Throws AuthError on invalid or expired token, weak password, etc.
+   * @throws AuthError
+   */
   static async resetPassword(
     body: {
       token: string;
@@ -858,6 +1140,13 @@ export class Am {
     return new Am(config).resetPassword(body);
   }
 
+  /**
+   * Completes a password reset using the token received via email. On success,
+   * the user's password is updated.
+   *
+   * Throws AuthError on invalid or expired token, weak password, etc.
+   * @throws AuthError
+   */
   async resetPassword(body: {
     token: string;
     newPassword: string;
@@ -865,8 +1154,16 @@ export class Am {
     return unauthPost(this.options, "/auth/reset-password", body);
   }
 
+  /**
+   * Sends a magic link email to the specified address. A magic link allows
+   * passwordless authentication.
+   *
+   * Throws AuthError on invalid email format, etc.
+   * @throws AuthError
+   */
   static async sendMagicLink(
     body: {
+      clientId: ClientId;
       email: string;
       csrfToken?: string;
     },
@@ -875,15 +1172,30 @@ export class Am {
     return new Am(config).sendMagicLink(body);
   }
 
+  /**
+   * Sends a magic link email to the specified address. A magic link allows
+   * passwordless authentication.
+   *
+   * Throws AuthError on invalid email format, etc.
+   * @throws AuthError
+   */
   async sendMagicLink(body: {
+    clientId: ClientId;
     email: string;
     csrfToken?: string;
   }): Promise<void> {
     return unauthPost(this.options, "/auth/send-magic-link", body);
   }
 
+  /**
+   * Sends a password reset email to the specified address.
+   *
+   * Throws AuthError on invalid email format, etc.
+   * @throws AuthError
+   */
   static async sendPasswordReset(
     body: {
+      clientId: ClientId;
       email: string;
       csrfToken?: string;
     },
@@ -892,7 +1204,14 @@ export class Am {
     return new Am(config).sendPasswordReset(body);
   }
 
+  /**
+   * Sends a password reset email to the specified address.
+   *
+   * Throws AuthError on invalid email format, etc.
+   * @throws AuthError
+   */
   async sendPasswordReset(body: {
+    clientId: ClientId;
     email: string;
     csrfToken?: string;
   }): Promise<void> {
