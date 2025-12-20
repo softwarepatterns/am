@@ -282,7 +282,9 @@ export class AuthError extends Error {
 
 function defaultFetchFn(): FetchFn {
   const f = (globalThis as any).fetch as FetchFn | undefined;
-  if (typeof f === "function") return f;
+  if (typeof f === "function") {
+    return f.bind(globalThis);
+  }
 
   return async () => {
     throw new Error(

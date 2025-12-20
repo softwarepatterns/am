@@ -1,12 +1,2 @@
-export { Am, AuthSession, AuthError } from "./auth";
-export type {
-  Authentication,
-  ClientId,
-  EmailCheckStatus,
-  LoginMethod,
-  ProblemDetails,
-  SessionProfile,
-  SessionTokens,
-  UserId,
-  UserResource,
-} from "./types";
+export * from "./auth";
+export * from "./types";
