@@ -2,9 +2,7 @@
 
 Authentication client SDK for **AccountMaker (Am)**.
 
-This package provides a small, stable client for interacting with the AccountMaker authentication API. It is designed for **Node.js applications** and **modern bundlers**, with explicit support for both **ESM** and **CommonJS** consumers.
-
-The SDK focuses on correctness, predictable behavior, and minimal surface area.
+This package provides a small, stable client for interacting with the AccountMaker authentication API. It is designed with explicit support for both ESM and CommonJS consumers.
 
 ---
 
@@ -15,8 +13,7 @@ The SDK focuses on correctness, predictable behavior, and minimal surface area.
 * Explicit error modeling using Problem Details
 * Token-based authenticated sessions
 * Automatic access-token refresh
-* No runtime dependencies
-* No side effects on import
+* No runtime dependencies or side effects on import
 
 ---
 
@@ -59,15 +56,8 @@ const { Am } = require("@softwarepatterns/am");
 ```ts
 import { Am } from "@softwarepatterns/am";
 
-const am = new Am({
-  baseUrl: "https://api.accountmaker.com"
-});
+const am = new Am();
 ```
-
-If no configuration is provided, the client defaults to:
-
-* `baseUrl: https://api.accountmaker.com`
-* `fetchFn: globalThis.fetch`
 
 ---
 
@@ -76,50 +66,61 @@ If no configuration is provided, the client defaults to:
 ### Login with email and password
 
 ```ts
-const result = await am.login({
+const session = await am.login({
+  clientId: "your-client-id",
   email: "user@example.com",
   password: "password"
 });
 ```
 
-The result contains both session tokens and the authenticated profile.
-
-```ts
-result.session;
-result.profile;
-```
-
----
-
-### Create an authenticated session
-
-```ts
-const session = am.createAuthSession(result.session);
-```
-
 An `AuthSession` represents an authenticated user and handles token refresh automatically.
 
----
-
-### Fetch the current user
-
 ```ts
-const me = await session.me();
+// Automatically adds Authorization header, will refresh tokens as needed, 
+const res = await session.fetch("https://yourdomain.com/some/protected/resource");
 ```
 
----
-
-### Refresh tokens explicitly
+You can also use the access token yourself.
 
 ```ts
-await session.refresh();
+if (session.isExpired()) {
+  await session.refresh();
+}
+await fetch("https://yourdomain.com/your/own/protected/api", {
+  headers: {
+    Authorization: `Bearer ${session.accessToken()}`
+  }
+});
 ```
+
+Your own services can validate the access token using AM's public keys.
+
+```ts
+import * as jose from 'jose';
+
+// Will auto fetch, cache, and rotate keys as needed
+const jwksUrl = new URL('https://auth.yourdomain.com/.well-known/jwks.json');
+
+// if not using a custom auth domain:
+// const jwksUrl = new URL('https://api.accountmaker.com/.well-known/jwks.json?client_id=your-client-id');
+
+const JWKS = jose.createRemoteJWKSet(jwksUrl);
+
+export const validateAccessToken = async (token: string) =>  {
+  const { payload } = await jose.jwtVerify(token, JWKS);
+
+  console.log('Account Id:', payload.acc);
+  console.log('User Id:', payload.uid);
+  console.log('User Account Role:', payload.role);
+}
+
+``` 
 
 ---
 
 ## Error handling
 
-All API errors are surfaced as `AuthError`.
+All API errors throw as `AuthError`.
 
 ```ts
 import { AuthError } from "@softwarepatterns/am";
@@ -135,53 +136,21 @@ try {
 }
 ```
 
-Errors follow the **Problem Details** format (`application/problem+json`).
+Errors follow **RFC 9457 Problem Details** format (`application/problem+json`).
 
-Unknown or unsupported error responses are converted into a generic problem shape without exposing raw response bodies.
+Unknown or unsupported error responses are converted into a generic problem shape without exposing raw response bodies. All non-HTTP errors (such as network or parsing errors) are left alone to bubble up.
 
 ---
 
-## Custom fetch implementation
+## Custom fetch
 
-If the runtime does not provide a global `fetch`, supply one explicitly.
+For mocking or for custom fetch implementations, you can provide your own.
 
 ```ts
 const am = new Am({
   fetchFn: fetch,
-  baseUrl: "https://api.accountmaker.com"
 });
 ```
-
-This is useful for:
-
-* Older Node versions
-* Instrumented HTTP clients
-* Testing
-
----
-
-## TypeScript support
-
-This package ships with bundled type definitions.
-
-```ts
-import type { AuthenticationResult } from "@softwarepatterns/am";
-```
-
-The public API is fully typed. Internal implementation details are not exposed.
-
----
-
-## Browser support
-
-This SDK does **not currently claim browser runtime support**.
-
-However:
-
-* The package is free of Node-only runtime APIs
-* It can be bundled by modern tools (Vite, Rollup, Webpack)
-
-Browser runtime support may be added in a future release, along with explicit guarantees and tests.
 
 ---
 
@@ -192,16 +161,6 @@ The following are guaranteed:
 * Stable ESM and CommonJS entry points
 * Stable TypeScript types for exported symbols
 * Compatibility with Node 18, 20, and 22
-* Deterministic build and publish artifacts
-
-The following are **not** guaranteed yet:
-
-* Browser runtime behavior
-* Backward compatibility prior to `1.0.0`
-
----
-
-## Versioning
 
 This package follows semantic versioning.
 
