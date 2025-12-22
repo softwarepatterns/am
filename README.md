@@ -8,12 +8,12 @@ This package provides a small, stable client for interacting with the AccountMak
 
 ## Features
 
-* ESM and CommonJS support
+* Automatic access-token refresh
 * TypeScript-first API with bundled `.d.ts`
-* Explicit error modeling using Problem Details
-* Token-based authenticated sessions
+* Explicit error modeling via RFC 9457 Problem Details
 * Automatic access-token refresh
 * No runtime dependencies or side effects on import
+* ESM and CommonJS support
 
 ---
 
@@ -63,17 +63,47 @@ const am = new Am();
 
 ## Authentication flows
 
-### Login with email and password
+### Sign in with email and password
 
 ```ts
-const session = await am.login({
+const session = await am.signIn({
   clientId: "your-client-id",
   email: "user@example.com",
   password: "password"
 });
 ```
 
-An `AuthSession` represents an authenticated user and handles token refresh automatically.
+### Sign up (register) a new user with email and password
+
+```ts
+const session = await am.signUp({
+  clientId: "your-client-id",
+  email: "user@example.com",
+  password: "password"
+});
+```
+
+### Accept an invite from an email link
+
+```ts
+const session = await am.acceptInvite({
+  clientId: "your-client-id",
+  token: "token-from-email",
+});
+```
+
+### Sign in with a token from an email link
+
+```ts
+const session = await am.signInWithToken({
+  clientId: "your-client-id",
+  token: "token-from-email",
+});
+```
+
+## Usage
+
+A session represents an authenticated user and handles token refresh automatically.
 
 ```ts
 // Automatically adds Authorization header, will refresh tokens as needed, 
@@ -116,6 +146,25 @@ export const validateAccessToken = async (token: string) =>  {
 
 ``` 
 
+By default, tokens are saved in memory only.
+
+```ts
+const am = new Am({
+  storage: null // disable storage, default is in-memory
+});
+```
+
+Set to "localStorage" to persist sessions across reloads.
+
+```ts
+const am = new Am({
+  storage: "localStorage"
+});
+const session = am.restoreSession();
+```
+
+Or implement your own storage mechanism by implementing the Storage interface.
+
 ---
 
 ## Error handling
@@ -126,7 +175,7 @@ All API errors throw as `AuthError`.
 import { AuthError } from "@softwarepatterns/am";
 
 try {
-  await am.login({ email, password });
+  await am.signIn({ email, password });
 } catch (err) {
   if (err instanceof AuthError) {
     console.log(err.status);

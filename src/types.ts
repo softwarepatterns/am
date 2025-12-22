@@ -89,6 +89,7 @@ export type AccountStatus =
  */
 export type AccountResource = {
   id: AccountId;
+  parentId: AccountId | null;
   /** Display name chosen by the account owner */
   name: string | null;
   /** URL to the account's avatar image */
@@ -196,7 +197,7 @@ export type SessionTokens = {
 export type SessionProfile = UserResource & {
   identity: UserIdentity | null;
   emailCredentials: EmailCredential[];
-  memberships: Membership[];
+  memberships: (Membership & { account: AccountResource })[];
   /** Currently active membership in the accessToken (determined by preferredMembershipId or context) */
   activeMembership: Membership | null;
   lastUpdatedAt: number;
@@ -207,7 +208,7 @@ export type SessionProfile = UserResource & {
  */
 export type Authentication = {
   tokens: SessionTokens;
-  profile: SessionProfile | null;
+  profile: SessionProfile;
 };
 
 /**

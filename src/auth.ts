@@ -6,13 +6,14 @@ import type {
   ProblemDetails,
   SessionProfile,
   SessionTokens,
-  UserId,
-  UserResource,
   StorageLike,
 } from "./types";
 
 const MINUTE_MS = 60 * 1000;
-const STATE = Symbol("state");
+const SESSION_STATE = Symbol("session_state");
+const AUTH_SESSION = Symbol("auth_session");
+const AUTH_STATE = Symbol("auth_state");
+const EMITTER = Symbol("emitter");
 
 type StorageConfig = StorageLike | "localStorage" | null | undefined;
 
@@ -25,21 +26,30 @@ type Config = {
   baseUrl: string;
   earlyRefreshMs: number;
   fetchFn: FetchFn;
-  onRefresh?: (tokens: SessionTokens) => void | Promise<void>;
-  onProfileRefetch?: (profile: SessionProfile) => void | Promise<void>;
-  onUnauthenticated?: (e: AuthError) => void | Promise<void>;
   profileStorageKey: string;
   storage: StorageConfig;
   tokensStorageKey: string;
 };
 
-type State = {
+type AuthEventMap = {
+  refresh: SessionTokens;
+  profileChange: SessionProfile;
+  unauthenticated: AuthError;
+  sessionChange: AuthSession | null;
+};
+
+type SessionState = {
   cleared: boolean;
   config: Config;
   refreshPromise: Promise<void> | null;
   profilePromise: Promise<void> | null;
-  profile: SessionProfile | null;
+  profile: SessionProfile;
   tokens: SessionTokens;
+};
+
+type AuthState = {
+  config: Config;
+  listeners: { [K in keyof AuthEventMap]?: Set<(v: AuthEventMap[K]) => void> };
 };
 
 function getBrowserLocalStorage(): StorageLike | null {
@@ -150,12 +160,58 @@ function isSessionProfile(x: any): x is SessionProfile {
   );
 }
 
-function getState(session: AuthSession): State {
-  return (session as any)[STATE] as State;
+function getSessionState(session: AuthSession): SessionState {
+  return (session as any)[SESSION_STATE] as SessionState;
 }
 
-function setState(session: AuthSession, state: State) {
-  (session as any)[STATE] = state;
+function setSessionState(session: AuthSession, state: SessionState) {
+  (session as any)[SESSION_STATE] = state;
+}
+
+function getAuthState(am: Am): AuthState {
+  return (am as any)[AUTH_STATE];
+}
+
+function setAuthState(am: Am, state: AuthState) {
+  (am as any)[AUTH_STATE] = state;
+}
+
+function getAuthSession(am: Am): AuthSession | null {
+  return (am as any)[AUTH_SESSION] || null;
+}
+
+function setAuthSession(am: Am, session: AuthSession) {
+  (am as any)[AUTH_SESSION] = session;
+  const sessionState = getSessionState(session);
+  setSessionStateEmitter(sessionState, am);
+  emitSessionStateEvent(sessionState, "sessionChange", session);
+}
+
+function setSessionStateEmitter(sessionState: SessionState, am: Am) {
+  (sessionState as any)[EMITTER] = <K extends keyof AuthEventMap>(
+    event: K,
+    value: AuthEventMap[K],
+  ) => {
+    const authState = getAuthState(am);
+    const set = authState.listeners[event];
+    if (!set) return;
+    for (const fn of set) {
+      try {
+        fn(value);
+      } catch {
+        console.warn("Unhandled error in AuthEvent listener for event", event);
+      }
+    }
+  };
+}
+
+function emitSessionStateEvent<K extends keyof AuthEventMap>(
+  sessionState: SessionState,
+  event: K,
+  value: AuthEventMap[K],
+) {
+  const emit = (sessionState as any)[EMITTER];
+  emit(event, value);
 }
 
 function camelCaseStr(str: string): string {
@@ -399,7 +455,7 @@ const unauthPost = async (
  * @throws AuthError
  */
 const authFetch = async (
-  state: State,
+  state: SessionState,
   url: string | URL,
   init: RequestInit = {},
 ) => {
@@ -414,7 +470,7 @@ const authFetch = async (
   return handleResponse(res);
 };
 
-const isExpired = (state: State): boolean => {
+const isExpired = (state: SessionState): boolean => {
   const early = Math.min(
     Math.max(state.config.earlyRefreshMs, 0),
     5 * MINUTE_MS,
@@ -422,7 +478,7 @@ const isExpired = (state: State): boolean => {
   return Date.now() >= state.tokens.expiresAt - early;
 };
 
-const refresh = async (state: State): Promise<void> => {
+const refresh = async (state: SessionState): Promise<void> => {
   if (state.cleared) return;
 
   if (!state.refreshPromise) {
@@ -451,7 +507,7 @@ const isUnauthenticatedAuthError = (e: any): e is AuthError => {
  * @throws AuthError
  */
 const authFetchWithRefresh = async (
-  state: State,
+  state: SessionState,
   url: string | URL,
   init: RequestInit = {},
 ) => {
@@ -482,14 +538,8 @@ const authFetchWithRefresh = async (
       return await authFetch(state, url, init);
     } catch (e2) {
       // Notify unauthenticated handler if provided.
-      if (
-        state.config.onUnauthenticated &&
-        !state.cleared &&
-        isUnauthenticatedAuthError(e2)
-      ) {
-        try {
-          await state.config.onUnauthenticated(e2);
-        } catch {}
+      if (!state.cleared && isUnauthenticatedAuthError(e2)) {
+        emitSessionStateEvent(state, "unauthenticated", e2);
       }
       throw e2;
     }
@@ -502,7 +552,7 @@ const authFetchWithRefresh = async (
  * @throws AuthError
  */
 const authGet = async (
-  state: State,
+  state: SessionState,
   path: string,
   query: Record<string, string> = {},
 ) => {
@@ -526,7 +576,7 @@ const authGet = async (
  * @throws AuthError
  */
 const authPost = async (
-  state: State,
+  state: SessionState,
   path: string,
   body: Record<string, unknown>,
 ) => {
@@ -556,7 +606,7 @@ const toSessionProfile = (profile: any): SessionProfile => {
   };
 };
 
-async function doRefresh(state: State): Promise<void> {
+async function doRefresh(state: SessionState): Promise<void> {
   const { fetchFn, baseUrl } = state.config;
 
   const res = await fetchFn(`${baseUrl}/auth/refresh`, {
@@ -576,17 +626,17 @@ async function doRefresh(state: State): Promise<void> {
   const storage = resolveStorage(state.config.storage);
   writeTokensIfNewer(storage, state.config.tokensStorageKey, tokens);
 
-  await state.config.onRefresh?.(tokens);
+  emitSessionStateEvent(state, "refresh", tokens);
 }
 
-async function doRefetchProfile(state: State): Promise<void> {
+async function doRefetchProfile(state: SessionState): Promise<void> {
   const profile = toSessionProfile(await authGet(state, "/auth/me", {}));
   state.profile = profile;
 
   const storage = resolveStorage(state.config.storage);
   writeProfileIfNewer(storage, state.config.profileStorageKey, profile);
 
-  await state.config.onProfileRefetch?.(profile);
+  emitSessionStateEvent(state, "profileChange", profile);
 }
 
 const handleAuthenticationResponse = (json: any): Authentication => {
@@ -611,7 +661,7 @@ export class AuthSession {
   constructor(initial: Authentication, config: Partial<Config>) {
     const merged = { ...defaultConfig, ...config } as Config;
 
-    const state: State = {
+    const state: SessionState = {
       ...initial,
       config: merged,
       refreshPromise: null,
@@ -619,7 +669,7 @@ export class AuthSession {
       cleared: false,
     };
 
-    setState(this, state);
+    setSessionState(this, state);
 
     const storage = resolveStorage(merged.storage);
     writeTokensIfNewer(storage, merged.tokensStorageKey, state.tokens);
@@ -631,77 +681,26 @@ export class AuthSession {
   }
 
   /**
-   * Restores an AuthSession from persisted storage. Returns null if no valid session
-   * is found.
-   *
-   * @example
-   * ```ts
-   * const session = AuthSession.restoreSession();
-   * if (session) {
-   *   console.log("Restored session for user:", session.profile);
-   * } else {
-   *   console.log("No valid session found.");
-   * }
-   * ```
-   */
-  static restoreSession(config: Partial<Config> = {}): AuthSession | null {
-    const merged = { ...defaultConfig, ...config } as Config;
-    const storage = resolveStorage(merged.storage);
-    if (!storage) return null;
-
-    const tokensRaw = readJson<unknown>(storage, merged.tokensStorageKey);
-    const tokens = isSessionTokens(tokensRaw) ? tokensRaw : null;
-
-    if (!tokens) {
-      if (tokensRaw !== null) removeKey(storage, merged.tokensStorageKey);
-      // avoid ghost profile
-      removeKey(storage, merged.profileStorageKey);
-      return null;
-    }
-
-    const profileRaw = readJson<unknown>(storage, merged.profileStorageKey);
-    const profile = isSessionProfile(profileRaw) ? profileRaw : null;
-
-    if (profileRaw !== null && !profile) {
-      // schema drift or corrupted profile data
-      removeKey(storage, merged.profileStorageKey);
-    }
-
-    return new AuthSession({ tokens, profile }, merged);
-  }
-
-  /**
    * Removes all persisted data (tokens, profile) from storage, and prevents future
    * refreshs of token and profile data. Does NOT clear current token or profile data from the
    * session memory, but effectively deactivates the session for future use.
    */
   clear(): void {
-    const state = getState(this);
+    const state = getSessionState(this);
     clearAuth(state.config);
     state.cleared = true;
   }
 
-  accessToken(): string {
-    return getState(this).tokens.accessToken;
+  get tokens(): SessionTokens {
+    return getSessionState(this).tokens;
   }
-  refreshToken(): string {
-    return getState(this).tokens.refreshToken;
-  }
-  idToken(): string | undefined {
-    return getState(this).tokens.idToken;
-  }
-  expiresIn(): number {
-    return getState(this).tokens.expiresIn;
-  }
-  expiresAt(): Date {
-    return new Date(getState(this).tokens.expiresAt);
-  }
-  profile(): SessionProfile | null {
-    return getState(this).profile;
+
+  get profile(): SessionProfile {
+    return getSessionState(this).profile;
   }
 
   toJSON(): Authentication {
-    const state = getState(this);
+    const state = getSessionState(this);
     return { tokens: state.tokens, profile: state.profile };
   }
 
@@ -721,7 +720,7 @@ export class AuthSession {
    * "soon" threshold is configured via Config.earlyRefreshMs (default 1 minute).
    */
   isExpired(): boolean {
-    return isExpired(getState(this));
+    return isExpired(getSessionState(this));
   }
 
   /**
@@ -749,7 +748,7 @@ export class AuthSession {
    * @throws AuthError
    */
   async fetch(url: string | URL, init: RequestInit = {}) {
-    return authFetchWithRefresh(getState(this), url, init);
+    return authFetchWithRefresh(getSessionState(this), url, init);
   }
 
   /**
@@ -758,7 +757,7 @@ export class AuthSession {
    * expiring.
    */
   async refresh(): Promise<void> {
-    return refresh(getState(this));
+    return refresh(getSessionState(this));
   }
 
   /**
@@ -774,7 +773,7 @@ export class AuthSession {
    * @throws AuthError
    */
   async refetchProfile(): Promise<void> {
-    const state = getState(this);
+    const state = getSessionState(this);
     if (state.cleared) {
       // silently do nothing
       return;
@@ -799,17 +798,7 @@ export class AuthSession {
    * @throws AuthError
    */
   async sendVerificationEmail(): Promise<void> {
-    await authPost(getState(this), "/auth/send-verification-email", {});
-  }
-
-  /**
-   * Fetches a user by ID.
-   *
-   * Throws AuthError on invalid user ID, network errors, etc.
-   * @throws AuthError
-   */
-  async user(id: UserId): Promise<UserResource> {
-    return authGet(getState(this), `/auth/user/${id}`, {});
+    await authPost(getSessionState(this), "/auth/send-verification-email", {});
   }
 }
 
@@ -828,47 +817,82 @@ export class AuthSession {
  * ```
  */
 export class Am {
-  private options: Config;
-
   constructor(config?: Partial<Config>) {
-    this.options = { ...defaultConfig, ...config } as Config;
+    setAuthState(this, {
+      config: { ...defaultConfig, ...config },
+      listeners: {},
+    });
   }
 
   /**
-   * Creates an AuthSession from existing authentication data. Useful for restoring
-   * a session from custom storage or creating a session from custom server-provided data.
-   */
-  static createAuthSession(
-    initial: Authentication,
-    config?: Partial<Config>,
-  ): AuthSession {
-    return new Am(config).createAuthSession(initial);
-  }
-
-  /**
-   * Creates an AuthSession from existing authentication data. Useful for restoring
-   * a session from custom storage or creating a session from custom server-provided data.
-   */
-  createAuthSession(initial: Authentication): AuthSession {
-    return new AuthSession(initial, this.options);
-  }
-
-  /**
-   * Accepts an invitation to join an account. On success, returns an AuthSession
-   * containing fresh tokens and profile. Tokens are automatically persisted (if
-   * storage is enabled).
+   * Returns the current AuthSession if one exists, or null otherwise.
    *
-   * Throws AuthError on invalid or expired token, etc.
-   * @throws AuthError
+   * @example
+   * ```ts
+   * if (!am.session) throw new Error("Not authenticated");
+   * // or
+   * am.session?.fetch('/api/protected-resource')
+   * // or
+   * const profile = am.session?.profile();
+   * ```
    */
-  static async acceptInvite(
-    query: {
-      clientId: ClientId;
-      token: string;
-    },
-    config?: Partial<Config>,
-  ): Promise<AuthSession> {
-    return new Am(config).acceptInvite(query);
+  get session(): AuthSession | null {
+    return getAuthSession(this);
+  }
+
+  /**
+   * Creates an AuthSession from existing authentication data. Useful for restoring
+   * a session from custom storage or creating a session from custom server-provided data.
+   */
+  createSession(initial: Authentication): AuthSession {
+    const session = new AuthSession(initial, getAuthState(this).config);
+    setAuthSession(this, session);
+    return session;
+  }
+
+  /**
+   * Restores an AuthSession from persisted storage. Returns null if no valid session
+   * is found.
+   *
+   * @example
+   * ```ts
+   * const session = AuthSession.restoreSession();
+   * if (session) {
+   *   console.log("Restored session for user:", session.profile);
+   * } else {
+   *   console.log("No valid session found.");
+   * }
+   * ```
+   */
+  restoreSession(): AuthSession | null {
+    const config = getAuthState(this).config;
+    const storage = resolveStorage(config.storage);
+    if (!storage) return null;
+
+    const tokensRaw = readJson<unknown>(storage, config.tokensStorageKey);
+    const tokens = isSessionTokens(tokensRaw) ? tokensRaw : null;
+
+    const profileRaw = readJson<unknown>(storage, config.profileStorageKey);
+    const profile = isSessionProfile(profileRaw) ? profileRaw : null;
+
+    if (!tokens || !profile) {
+      removeKey(storage, config.tokensStorageKey);
+      removeKey(storage, config.profileStorageKey);
+      return null;
+    }
+
+    const session = new AuthSession({ tokens, profile }, config);
+    setAuthSession(this, session);
+    return session;
+  }
+
+  on<K extends keyof AuthEventMap>(event: K, fn: (v: AuthEventMap[K]) => void) {
+    const listeners = getAuthState(this).listeners;
+    const set = ((listeners[event] as unknown) ??= new Set<
+      (v: AuthEventMap[K]) => void
+    >()) as Set<(v: AuthEventMap[K]) => void>;
+    set.add(fn);
+    return () => set.delete(fn);
   }
 
   /**
@@ -883,30 +907,13 @@ export class Am {
     clientId: ClientId;
     token: string;
   }): Promise<AuthSession> {
+    const config = getAuthState(this).config;
     const initial = handleAuthenticationResponse(
-      await unauthGet(this.options, "/auth/accept-invite", query),
+      await unauthGet(config, "/auth/accept-invite", query),
     );
-    return new AuthSession(initial, this.options);
-  }
-
-  /**
-   * Checks the status of an email address for authentication purposes. Indicates whether the
-   * email is associated with an active account, and what login methods are preferred and
-   * available for that user. This can be used to enforce login expierences for enterprise SSO or
-   * to prefer passwordless login methods.
-   *
-   * Throws AuthError on invalid client ID, network errors, etc.
-   * @throws AuthError
-   */
-  static async checkEmail(
-    body: { clientId: ClientId; email: string; csrfToken?: string },
-    config?: Partial<Config>,
-  ): Promise<{
-    status: EmailCheckStatus;
-    preferred: LoginMethod[];
-    available: LoginMethod[];
-  }> {
-    return new Am(config).checkEmail(body);
+    const session = new AuthSession(initial, config);
+    setAuthSession(this, session);
+    return session;
   }
 
   /**
@@ -927,19 +934,7 @@ export class Am {
     preferred: LoginMethod[];
     available: LoginMethod[];
   }> {
-    return unauthPost(this.options, "/auth/check-email", body);
-  }
-
-  /**
-   * When called, sets a httpOnly CSRF session cookie. Then when rendering a form, call csrfToken()
-   * to get the signed token to include in the form. When the form is submitted, the server
-   * will verify the signed token against the session cookie. This prevents a certain class
-   * of CSRF attacks that rely on being able to read values from the target site.
-   */
-  static async csrfSession(
-    config?: Partial<Config>,
-  ): Promise<{ csrfToken: string }> {
-    return new Am(config).csrfSession();
+    return unauthPost(getAuthState(this).config, "/auth/check-email", body);
   }
 
   /**
@@ -949,22 +944,7 @@ export class Am {
    * of CSRF attacks that rely on being able to read values from the target site.
    */
   async csrfSession(): Promise<{ csrfToken: string }> {
-    return unauthGet(this.options, "/auth/csrf-session");
-  }
-
-  /**
-   * Fetches a signed CSRF token for use in forms. Call csrfSession() first to set a httpOnly CSRF
-   * session cookie, then call this method to get the signed token, then include the token in your
-   * form submissions. When the form is submitted, the server will verify the signed token against
-   * the httpOnly session cookie. This prevents a certain class of CSRF attacks that rely on being
-   * able to read values from the target site.
-   *
-   * @throws AuthError
-   */
-  static async csrfToken(
-    config?: Partial<Config>,
-  ): Promise<{ csrfToken: string }> {
-    return new Am(config).csrfToken();
+    return unauthGet(getAuthState(this).config, "/auth/csrf-session");
   }
 
   /**
@@ -977,26 +957,7 @@ export class Am {
    * @throws AuthError
    */
   async csrfToken(): Promise<{ csrfToken: string }> {
-    return unauthGet(this.options, "/auth/csrf-token");
-  }
-
-  /**
-   * On success, returns an AuthSession containing fresh tokens and profile.
-   * Tokens are automatically persisted (if storage is enabled).
-   *
-   * Throws AuthError on invalid credentials, unverified email, etc.
-   * @throws AuthError
-   */
-  static async signIn(
-    body: {
-      clientId: ClientId;
-      email: string;
-      password: string;
-      csrfToken?: string;
-    },
-    config?: Partial<Config>,
-  ): Promise<AuthSession> {
-    return new Am(config).signIn(body);
+    return unauthGet(getAuthState(this).config, "/auth/csrf-token");
   }
 
   /**
@@ -1012,27 +973,14 @@ export class Am {
     password: string;
     csrfToken?: string;
   }): Promise<AuthSession> {
+    const config = getAuthState(this).config;
     const initial = handleAuthenticationResponse(
-      await unauthPost(this.options, "/auth/sign-in", body),
+      await unauthPost(config, "/auth/sign-in", body),
     );
 
-    return new AuthSession(initial, this.options);
-  }
-
-  /**
-   * Authenticates using a one-time token (e.g., magic link or invite token).
-   *
-   * On success, returns an AuthSession containing fresh tokens and profile.
-   * Tokens are automatically persisted (if storage is enabled).
-   *
-   * Throws AuthError on invalid or expired token, etc.
-   * @throws AuthError
-   */
-  static async signInWithToken(
-    token: string,
-    config?: Partial<Config>,
-  ): Promise<AuthSession> {
-    return new Am(config).signInWithToken(token);
+    const session = new AuthSession(initial, config);
+    setAuthSession(this, session);
+    return session;
   }
 
   /**
@@ -1045,64 +993,16 @@ export class Am {
    * @throws AuthError
    */
   async signInWithToken(token: string): Promise<AuthSession> {
-    const options = this.options;
+    const config = getAuthState(this).config;
     const initial = handleAuthenticationResponse(
-      await unauthGet(options, "/auth/sign-in-with-token", {
+      await unauthGet(config, "/auth/sign-in-with-token", {
         token,
       }),
     );
 
-    return new AuthSession(initial, options);
-  }
-
-  /**
-   * Manually refreshes session tokens using the provided refresh token. Does NOT
-   * persist tokens. Use AuthSession.refresh() to refresh and persist tokens in an
-   * existing session.
-   *
-   * Throws AuthError on invalid or expired refresh token, etc.
-   * @throws AuthError
-   */
-  static async refresh(
-    refreshToken: string,
-    config?: Partial<Config>,
-  ): Promise<SessionTokens> {
-    return new Am(config).refresh(refreshToken);
-  }
-
-  /**
-   * Manually refreshes session tokens using the provided refresh token. Does NOT
-   * persist tokens. Use AuthSession.refresh() to refresh and persist tokens in an
-   * existing session.
-   *
-   * Throws AuthError on invalid or expired refresh token, etc.
-   * @throws AuthError
-   */
-  async refresh(refreshToken: string): Promise<SessionTokens> {
-    return toSessionTokens(
-      await unauthPost(this.options, "/auth/refresh", {
-        refreshToken,
-      }),
-    );
-  }
-
-  /**
-   * Successful registration immediately authenticates the user and returns an
-   * AuthSession. Tokens are automatically persisted (if storage is enabled).
-   *
-   * Throws AuthError on invalid data, existing email, etc.
-   * @throws AuthError
-   */
-  static async signUp(
-    body: {
-      clientId: ClientId;
-      email: string;
-      password: string;
-      csrfToken?: string;
-    },
-    config?: Partial<Config>,
-  ): Promise<AuthSession> {
-    return new Am(config).signUp(body);
+    const session = new AuthSession(initial, config);
+    setAuthSession(this, session);
+    return session;
   }
 
   /**
@@ -1118,28 +1018,14 @@ export class Am {
     password: string;
     csrfToken?: string;
   }): Promise<AuthSession> {
+    const config = getAuthState(this).config;
     const initial = handleAuthenticationResponse(
-      await unauthPost(this.options, "/auth/sign-up", body),
+      await unauthPost(config, "/auth/sign-up", body),
     );
 
-    return new AuthSession(initial, this.options);
-  }
-
-  /**
-   * Completes a password reset using the token received via email. On success,
-   * the user's password is updated.
-   *
-   * Throws AuthError on invalid or expired token, weak password, etc.
-   * @throws AuthError
-   */
-  static async resetPassword(
-    body: {
-      token: string;
-      newPassword: string;
-    },
-    config?: Partial<Config>,
-  ): Promise<void> {
-    return new Am(config).resetPassword(body);
+    const session = new AuthSession(initial, config);
+    setAuthSession(this, session);
+    return session;
   }
 
   /**
@@ -1153,25 +1039,7 @@ export class Am {
     token: string;
     newPassword: string;
   }): Promise<void> {
-    return unauthPost(this.options, "/auth/reset-password", body);
-  }
-
-  /**
-   * Sends a magic link email to the specified address. A magic link allows
-   * passwordless authentication.
-   *
-   * Throws AuthError on invalid email format, etc.
-   * @throws AuthError
-   */
-  static async sendMagicLink(
-    body: {
-      clientId: ClientId;
-      email: string;
-      csrfToken?: string;
-    },
-    config?: Partial<Config>,
-  ): Promise<void> {
-    return new Am(config).sendMagicLink(body);
+    return unauthPost(getAuthState(this).config, "/auth/reset-password", body);
   }
 
   /**
@@ -1186,26 +1054,8 @@ export class Am {
     email: string;
     csrfToken?: string;
   }): Promise<void> {
-    return unauthPost(this.options, "/auth/send-magic-link", body);
+    return unauthPost(getAuthState(this).config, "/auth/send-magic-link", body);
   }
-
-  /**
-   * Sends a password reset email to the specified address.
-   *
-   * Throws AuthError on invalid email format, etc.
-   * @throws AuthError
-   */
-  static async sendPasswordReset(
-    body: {
-      clientId: ClientId;
-      email: string;
-      csrfToken?: string;
-    },
-    config?: Partial<Config>,
-  ): Promise<void> {
-    return new Am(config).sendPasswordReset(body);
-  }
-
   /**
    * Sends a password reset email to the specified address.
    *
@@ -1217,6 +1067,10 @@ export class Am {
     email: string;
     csrfToken?: string;
   }): Promise<void> {
-    return unauthPost(this.options, "/auth/send-password-reset", body);
+    return unauthPost(
+      getAuthState(this).config,
+      "/auth/send-password-reset",
+      body,
+    );
   }
 }
