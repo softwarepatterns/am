@@ -109,12 +109,7 @@ export type AccountResource = {
  * - suspended: Access restricted due to billing or policy
  * - closed: Permanently closed
  */
-export type UserStatus =
-  | "active"
-  | "trial"
-  | "past_due"
-  | "suspended"
-  | "closed";
+export type UserStatus = "active" | "disabled" | "suspended" | "deleted";
 
 /**
  * A reference to a user. Will not be deleted even due to GDPR requests or account closures,
