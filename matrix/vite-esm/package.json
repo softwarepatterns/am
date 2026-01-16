@@ -4,7 +4,7 @@
     "dev": "vite"
   },
   "dependencies": {
-    "@softwarepatterns/am": "../../softwarepatterns-am-0.0.1.tgz"
+    "@softwarepatterns/am": "../../softwarepatterns-am-0.1.0.tgz"
   },
   "devDependencies": {
     "vite": "^5.0.0"
