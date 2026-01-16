@@ -428,16 +428,9 @@ const fetchSessionResponseEnsureFresh = async (
   if (res.status !== 401) return res;
   if (state.cleared) return res;
 
-  try {
-    await refresh(state); // may throw AuthError
-    res = await fetchSessionResponse(state, input, init);
-    return res;
-  } catch (e) {
-    if (!state.cleared && isUnauthenticatedAuthError(e)) {
-      emitSessionStateEvent(state, "unauthenticated", e);
-    }
-    throw e;
-  }
+  await refresh(state); // may throw AuthError (emits unauthenticated on 401)
+  res = await fetchSessionResponse(state, input, init);
+  return res;
 };
 
 /** Parses JSON (camelCase) and throws AuthError on non-2xx responses. */
@@ -589,7 +582,17 @@ async function doRefresh(state: SessionState): Promise<void> {
     ),
   });
 
-  const tokens = toSessionTokens(await handleJsonOrThrow(res));
+  let json;
+  try {
+    json = await handleJsonOrThrow(res);
+  } catch (e) {
+    if (!state.cleared && isUnauthenticatedAuthError(e)) {
+      emitSessionStateEvent(state, "unauthenticated", e);
+    }
+    throw e;
+  }
+
+  const tokens = toSessionTokens(json);
   state.tokens = tokens;
 
   const storage = resolveStorage(state.config.storage);
