@@ -43,13 +43,29 @@
   "scripts": {
     "build:clean": "rm -rf dist",
     "build": "npm run build:clean && rollup -c",
-    "prepublishOnly": "npm run check",
+    "prepublishOnly": "npm run build",
     "test:unit": "bun test src",
     "test:integration": "NODE_TLS_REJECT_UNAUTHORIZED=0 bun test test/integration",
     "typecheck": "bunx tsc --noEmit",
-    "check": "npm run typecheck && npm run build"
+    "lint": "oxlint",
+    "test:matrix": "./scripts/matrix.sh",
+    "prepare": "husky"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.3.1",
+    "@commitlint/config-conventional": "^20.3.1",
+    "@rollup/plugin-commonjs": "^29.0.0",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@rollup/plugin-typescript": "^12.3.0",
+    "husky": "^9.1.7",
+    "oxlint": "^1.39.0",
+    "rollup": "^4.55.1",
+    "rollup-plugin-dts": "^6.3.0",
+    "tslib": "^2.8.1",
+    "typescript": "^5.9.3"
   }
 }

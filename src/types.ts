@@ -59,6 +59,8 @@ export type UserId = `uid${string}`;
 export type AccountId = `acc${string}`;
 /** Identifier for a membership linking a user to an account. */
 export type MembershipId = `mbr${string}`;
+/** Identifier for an application (namespace for users and clients). */
+export type ApplicationId = `app${string}`;
 
 /**
  * Possible statuses for an account.
@@ -89,7 +91,8 @@ export type AccountStatus =
  */
 export type AccountResource = {
   id: AccountId;
-  parentId: AccountId | null;
+  /** Parent application ID - accounts always belong to an application */
+  parentId: ApplicationId;
   /** Display name chosen by the account owner */
   name: string | null;
   /** URL to the account's avatar image */
@@ -114,10 +117,13 @@ export type UserStatus = "active" | "disabled" | "suspended" | "deleted";
 /**
  * A reference to a user. Will not be deleted even due to GDPR requests or account closures,
  * to maintain referential integrity in audit logs and historical records.
+ *
+ * Users belong to an Application. They access Accounts via Memberships.
  */
 export type UserResource = {
   id: UserId;
-  accountId: AccountId;
+  /** The application this user belongs to */
+  applicationId: ApplicationId;
   status: UserStatus;
   preferredMembershipId: MembershipId | null;
 };
@@ -193,9 +199,11 @@ export type SessionProfile = UserResource & {
   identity: UserIdentity | null;
   emailCredentials: EmailCredential[];
   memberships: (Membership & { account: AccountResource })[];
-  /** Currently active membership in the accessToken (determined by preferredMembershipId or context) */
+  /** Currently active membership in the accessToken */
   activeMembership: Membership | null;
   lastUpdatedAt: number;
+  /** Convenience: the account ID from the active membership (for navigation) */
+  accountId: AccountId | null;
 };
 
 /**

@@ -218,6 +218,36 @@ This package follows semantic versioning.
 
 ---
 
+## Development and Testing
+
+### Prerequisites
+
+Integration tests require credentials stored in `.env`. The encrypted version `.env.enc` is committed to the repository.
+
+### Decrypting credentials
+
+```bash
+sops -d .env.enc > .env
+```
+
+### Running tests
+
+```bash
+# Unit tests
+npm run test:unit
+
+# Integration tests (requires .env)
+npm run test:integration
+```
+
+### Re-encrypting after changes
+
+```bash
+sops -e .env > .env.enc
+```
+
+---
+
 ## License
 
 MIT

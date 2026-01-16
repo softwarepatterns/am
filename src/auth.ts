@@ -90,14 +90,14 @@ function writeJson<T>(
   if (!storage) return;
   try {
     storage.setItem(key, JSON.stringify(value));
-  } catch {}
+  } catch { }
 }
 
 function removeKey(storage: StorageLike | null, key: string): void {
   if (!storage) return;
   try {
     storage.removeItem(key);
-  } catch {}
+  } catch { }
 }
 
 function clearAuth(config: Config) {
@@ -153,7 +153,7 @@ function isSessionProfile(x: any): x is SessionProfile {
   return (
     !!x &&
     typeof x.id === "string" &&
-    typeof x.accountId === "string" &&
+    typeof x.applicationId === "string" &&
     typeof x.status === "string" &&
     typeof x.lastUpdatedAt === "number" &&
     (typeof x.identity === "object" || x.identity === null)
