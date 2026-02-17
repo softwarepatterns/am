@@ -1,6 +1,6 @@
 {
   "type": "commonjs",
   "dependencies": {
-    "@softwarepatterns/am": "../../softwarepatterns-am-0.1.0.tgz"
+    "@softwarepatterns/am": "../../softwarepatterns-am-0.2.0.tgz"
   }
 }

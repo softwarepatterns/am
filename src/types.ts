@@ -197,7 +197,7 @@ export type SessionTokens = {
  */
 export type SessionProfile = UserResource & {
   identity: UserIdentity | null;
-  emailCredentials: EmailCredential[];
+  credentials: EmailCredential[];
   memberships: (Membership & { account: AccountResource })[];
   /** Currently active membership in the accessToken */
   activeMembership: Membership | null;
