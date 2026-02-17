@@ -1,6 +1,6 @@
 {
   "name": "@softwarepatterns/am",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Auth client SDK for AccountMaker (Am)",
   "keywords": [
     "authentication",
