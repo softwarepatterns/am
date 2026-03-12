@@ -3,6 +3,7 @@ import type {
   ClientId,
   EmailCheckStatus,
   LoginMethod,
+  OAuth2LoginMethod,
   ProblemDetails,
   SessionProfile,
   SessionTokens,
@@ -90,14 +91,14 @@ function writeJson<T>(
   if (!storage) return;
   try {
     storage.setItem(key, JSON.stringify(value));
-  } catch { }
+  } catch {}
 }
 
 function removeKey(storage: StorageLike | null, key: string): void {
   if (!storage) return;
   try {
     storage.removeItem(key);
-  } catch { }
+  } catch {}
 }
 
 function clearAuth(config: Config) {
@@ -903,6 +904,23 @@ export class Am {
    */
   async csrfToken(): Promise<{ csrfToken: string }> {
     return unauthGet(getAuthState(this).config, "/auth/csrf-token");
+  }
+
+  /**
+   * checkEmail returns how an email should authenticate for this client.
+   *
+   * Use this to choose password vs magic link vs SSO before rendering a login form.
+   */
+  async loginMethods(body: { clientId: ClientId }): Promise<{
+    oauth_google?: OAuth2LoginMethod;
+    oauth_github?: OAuth2LoginMethod;
+    oauth_facebook?: OAuth2LoginMethod;
+    oauth_apple?: OAuth2LoginMethod;
+    oauth_microsoft?: OAuth2LoginMethod;
+    password?: OAuth2LoginMethod;
+    magic_link?: OAuth2LoginMethod;
+  }> {
+    return unauthPost(getAuthState(this).config, "/auth/login-methods", body);
   }
 
   /**

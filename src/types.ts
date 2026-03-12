@@ -236,3 +236,9 @@ export type StorageLike = {
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
 };
+
+export type OAuth2LoginMethod = {
+  login_method: "oauth2";
+  authorize_url: string;
+  callback_url: string;
+};

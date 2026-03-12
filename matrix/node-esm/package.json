@@ -1,6 +1,6 @@
 {
   "type": "module",
   "dependencies": {
-    "@softwarepatterns/am": "../../softwarepatterns-am-0.2.0.tgz"
+    "@softwarepatterns/am": "../../softwarepatterns-am-0.2.1.tgz"
   }
 }
