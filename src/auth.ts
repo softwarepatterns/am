@@ -1,4 +1,5 @@
 import type {
+  AccountId,
   Authentication,
   ClientId,
   EmailCheckStatus,
@@ -563,11 +564,31 @@ const toSessionTokens = (tokens: any): SessionTokens => {
 };
 
 const toSessionProfile = (profile: any): SessionProfile => {
+  const credentials = profile.credentials ?? profile.emailCredentials;
+  const activeMembership = profile.activeMembership ?? null;
+
   return {
     ...profile,
+    credentials,
+    activeMembership,
     lastUpdatedAt: Date.now(),
   };
 };
+
+function setSessionAuthentication(
+  state: SessionState,
+  authentication: Authentication,
+): void {
+  state.tokens = authentication.tokens;
+  state.profile = authentication.profile;
+
+  const storage = resolveStorage(state.config.storage);
+  writeTokensIfNewer(storage, state.config.tokensStorageKey, state.tokens);
+  writeProfileIfNewer(storage, state.config.profileStorageKey, state.profile);
+
+  emitSessionStateEvent(state, "refresh", state.tokens);
+  emitSessionStateEvent(state, "profileChange", state.profile);
+}
 
 async function doRefresh(state: SessionState): Promise<void> {
   const { fetchFn, baseUrl } = state.config;
@@ -618,6 +639,16 @@ const handleAuthenticationResponse = (json: any): Authentication => {
     profile: toSessionProfile(json.profile),
   };
 };
+
+async function doSwitchAccounts(
+  state: SessionState,
+  body: { accountId: AccountId; csrfToken?: string },
+): Promise<void> {
+  const authentication = handleAuthenticationResponse(
+    await authPost(state, "/auth/switch-accounts", body),
+  );
+  setSessionAuthentication(state, authentication);
+}
 
 /**
  * AuthSession represents an authenticated user with automatic token refresh and persisted state.
@@ -748,6 +779,16 @@ export class AuthSession {
     } finally {
       state.profilePromise = null;
     }
+  }
+
+  /**
+   * Switches the session into another account membership and replaces tokens/profile in place.
+   */
+  async switchAccounts(body: {
+    accountId: AccountId;
+    csrfToken?: string;
+  }): Promise<void> {
+    await doSwitchAccounts(getSessionState(this), body);
   }
 
   /**

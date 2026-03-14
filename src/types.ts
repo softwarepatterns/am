@@ -200,10 +200,8 @@ export type SessionProfile = UserResource & {
   credentials: EmailCredential[];
   memberships: (Membership & { account: AccountResource })[];
   /** Currently active membership in the accessToken */
-  activeMembership: Membership | null;
+  activeMembership: (Membership & { account: AccountResource }) | null;
   lastUpdatedAt: number;
-  /** Convenience: the account ID from the active membership (for navigation) */
-  accountId: AccountId | null;
 };
 
 /**

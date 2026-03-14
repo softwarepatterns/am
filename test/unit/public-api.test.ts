@@ -48,13 +48,11 @@ function createValidProfile(): SessionProfile {
     id: "uid_test",
     applicationId: "app_test",
     status: "active",
-    preferredMembershipId: null,
     identity: null,
-    emailCredentials: [],
+    credentials: [],
     memberships: [],
     activeMembership: null,
     lastUpdatedAt: Date.now(),
-    accountId: null,
   };
 }
 
@@ -262,9 +260,8 @@ describe("Am", () => {
               id: "uid_1",
               application_id: "app_1",
               status: "active",
-              preferred_membership_id: null,
               identity: null,
-              email_credentials: [],
+              credentials: [],
               memberships: [],
               active_membership: null,
             },
@@ -287,7 +284,7 @@ describe("Am", () => {
           status: 200,
           body: {
             tokens: { access_token: "at", refresh_token: "rt", token_type: "Bearer", expires_in: 3600 },
-            profile: { id: "uid_1", application_id: "app_1", status: "active", preferred_membership_id: null, identity: null, email_credentials: [], memberships: [], active_membership: null },
+            profile: { id: "uid_1", application_id: "app_1", status: "active", identity: null, credentials: [], memberships: [], active_membership: null },
           },
         }),
       });
@@ -323,7 +320,7 @@ describe("Am", () => {
           status: 200,
           body: {
             tokens: { access_token: "at", refresh_token: "rt", token_type: "Bearer", expires_in: 3600 },
-            profile: { id: "uid_1", application_id: "app_1", status: "active", preferred_membership_id: null, identity: null, email_credentials: [], memberships: [], active_membership: null },
+            profile: { id: "uid_1", application_id: "app_1", status: "active", identity: null, credentials: [], memberships: [], active_membership: null },
           },
         }),
       });
@@ -345,7 +342,7 @@ describe("Am", () => {
           status: 200,
           body: {
             tokens: { access_token: "at", refresh_token: "rt", token_type: "Bearer", expires_in: 3600 },
-            profile: { id: "uid_1", application_id: "app_1", status: "active", preferred_membership_id: null, identity: null, email_credentials: [], memberships: [], active_membership: null },
+            profile: { id: "uid_1", application_id: "app_1", status: "active", identity: null, credentials: [], memberships: [], active_membership: null },
           },
         }),
       });
@@ -362,7 +359,7 @@ describe("Am", () => {
           status: 200,
           body: {
             tokens: { access_token: "at", refresh_token: "rt", token_type: "Bearer", expires_in: 3600 },
-            profile: { id: "uid_1", application_id: "app_1", status: "active", preferred_membership_id: null, identity: null, email_credentials: [], memberships: [], active_membership: null },
+            profile: { id: "uid_1", application_id: "app_1", status: "active", identity: null, credentials: [], memberships: [], active_membership: null },
           },
         }),
       });
@@ -623,9 +620,8 @@ describe("AuthSession", () => {
             id: "uid_updated",
             application_id: "app_1",
             status: "active",
-            preferred_membership_id: null,
             identity: null,
-            email_credentials: [],
+            credentials: [],
             memberships: [],
             active_membership: null,
           },
@@ -645,9 +641,8 @@ describe("AuthSession", () => {
             id: "uid_updated",
             application_id: "app_1",
             status: "active",
-            preferred_membership_id: null,
             identity: { id: "uid_updated", display_name: "New Name", avatar_url: null, external_id: null, given_name: null, family_name: null, preferred_language: null, locale: null, timezone: null },
-            email_credentials: [],
+            credentials: [],
             memberships: [],
             active_membership: null,
           },
@@ -657,6 +652,213 @@ describe("AuthSession", () => {
 
       await session.refetchProfile();
       expect(session.profile.identity?.displayName).toBe("New Name");
+      expect(session.profile.credentials).toEqual([]);
+    });
+
+    it("preserves active membership account context", async () => {
+      const am = new Am({
+        fetchFn: createMockFetch({
+          status: 200,
+          body: {
+            id: "uid_updated",
+            application_id: "app_1",
+            status: "active",
+            identity: null,
+            credentials: [],
+            memberships: [],
+            active_membership: {
+              id: "mbr_2",
+              user_id: "uid_updated",
+              account_id: "acc_2",
+              role: "owner",
+              account: {
+                id: "acc_2",
+                parent_id: "app_1",
+                name: "Second Account",
+                avatar_url: null,
+                status: "active",
+                paid_until: null,
+              },
+            },
+          },
+        }),
+      });
+      const session = am.createSession(createValidAuthentication());
+
+      await session.refetchProfile();
+
+      expect(session.profile.activeMembership?.account.id).toBe("acc_2");
+      expect(session.profile.activeMembership?.account.name).toBe(
+        "Second Account",
+      );
+    });
+  });
+
+  describe("switchAccounts", () => {
+    it("replaces tokens and profile in place", async () => {
+      let requestUrl = "";
+      let requestMethod = "";
+      let requestBody = "";
+      let authorization = "";
+      const am = new Am({
+        fetchFn: async (input, init) => {
+          requestUrl = String(input);
+          requestMethod = init?.method ?? "";
+          requestBody = String(init?.body ?? "");
+          authorization = new Headers(init?.headers).get("Authorization") ?? "";
+          return new Response(
+            JSON.stringify({
+              tokens: {
+                access_token: "switched_access_token",
+                refresh_token: "switched_refresh_token",
+                token_type: "Bearer",
+                expires_in: 7200,
+              },
+              profile: {
+                id: "uid_1",
+                application_id: "app_1",
+                status: "active",
+                credentials: [],
+                identity: null,
+                memberships: [
+                  {
+                    id: "mbr_2",
+                    user_id: "uid_1",
+                    account_id: "acc_2",
+                    role: "owner",
+                    account: {
+                      id: "acc_2",
+                      parent_id: "app_1",
+                      name: "Second Account",
+                      avatar_url: null,
+                      status: "active",
+                      paid_until: null,
+                    },
+                  },
+                ],
+                active_membership: {
+                  id: "mbr_2",
+                  user_id: "uid_1",
+                  account_id: "acc_2",
+                  role: "owner",
+                  account: {
+                    id: "acc_2",
+                    parent_id: "app_1",
+                    name: "Second Account",
+                    avatar_url: null,
+                    status: "active",
+                    paid_until: null,
+                  },
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        },
+      });
+      const session = am.createSession(createValidAuthentication());
+
+      const result = await session.switchAccounts({ accountId: "acc_2" });
+
+      expect(result).toBeUndefined();
+      expect(requestUrl).toBe(
+        "https://api.accountmaker.com/auth/switch-accounts",
+      );
+      expect(requestMethod).toBe("POST");
+      expect(authorization).toBe("Bearer access_token");
+      expect(requestBody).toBe(JSON.stringify({ account_id: "acc_2" }));
+      expect(session.tokens.accessToken).toBe("switched_access_token");
+      expect(session.profile.activeMembership?.account.id).toBe("acc_2");
+      expect(session.profile.activeMembership?.account.name).toBe("Second Account");
+    });
+
+    it("updates storage and emits refresh/profileChange", async () => {
+      const storage = createMockStorage();
+      let refreshCount = 0;
+      let profileChangeCount = 0;
+      let latestAccessToken = "";
+      let latestAccountId = "";
+
+      const am = new Am({
+        earlyRefreshMs: 0,
+        storage,
+        fetchFn: async () =>
+          new Response(
+            JSON.stringify({
+              tokens: {
+                access_token: "switched_access_token",
+                refresh_token: "switched_refresh_token",
+                token_type: "Bearer",
+                expires_in: 3600,
+              },
+              profile: {
+                id: "uid_1",
+                application_id: "app_1",
+                status: "active",
+                identity: null,
+                credentials: [],
+                memberships: [
+                  {
+                    id: "mbr_2",
+                    user_id: "uid_1",
+                    account_id: "acc_2",
+                    role: "owner",
+                    account: {
+                      id: "acc_2",
+                      parent_id: "app_1",
+                      name: "Second Account",
+                      avatar_url: null,
+                      status: "active",
+                      paid_until: null,
+                    },
+                  },
+                ],
+                active_membership: {
+                  id: "mbr_2",
+                  user_id: "uid_1",
+                  account_id: "acc_2",
+                  role: "owner",
+                  account: {
+                    id: "acc_2",
+                    parent_id: "app_1",
+                    name: "Second Account",
+                    avatar_url: null,
+                    status: "active",
+                    paid_until: null,
+                  },
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      });
+      const initial = createValidAuthentication();
+      initial.tokens.expiresIn = 1;
+      initial.tokens.expiresAt = Date.now() + 1000;
+      initial.profile.lastUpdatedAt = 0;
+      const session = am.createSession(initial);
+
+      am.on("refresh", (tokens) => {
+        refreshCount += 1;
+        latestAccessToken = tokens.accessToken;
+      });
+      am.on("profileChange", (profile) => {
+        profileChangeCount += 1;
+        latestAccountId = profile.activeMembership?.account.id ?? "";
+      });
+
+      await session.switchAccounts({ accountId: "acc_2" });
+
+      expect(refreshCount).toBe(1);
+      expect(profileChangeCount).toBe(1);
+      expect(latestAccessToken).toBe("switched_access_token");
+      expect(latestAccountId).toBe("acc_2");
+
+      const storedTokens = JSON.parse(storage.getItem("am_tokens")!);
+      const storedProfile = JSON.parse(storage.getItem("am_profile")!);
+
+      expect(storedTokens.accessToken).toBe("switched_access_token");
+      expect(storedProfile.activeMembership.account.id).toBe("acc_2");
     });
   });
 

@@ -140,6 +140,14 @@ describe("SignIn Integration Tests", () => {
       // Fetch the profile endpoint directly to verify authentication works
       await session.refetchProfile();
       expect(session.profile.id).toBeDefined();
+      expect(Array.isArray(session.profile.credentials)).toBe(true);
+      expect(Array.isArray(session.profile.memberships)).toBe(true);
+      if (session.profile.activeMembership) {
+        expect(typeof session.profile.activeMembership.account.id).toBe("string");
+        expect(session.profile.activeMembership.account.id.length).toBeGreaterThan(0);
+      } else {
+        expect(session.profile.activeMembership).toBeNull();
+      }
     });
   });
 

@@ -53,7 +53,6 @@ function createValidProfile(): SessionProfile {
   return {
     id: "uid_test",
     applicationId: "app_test",
-    accountId: null,
     status: "active",
     lastUpdatedAt: Date.now(),
     identity: null,
