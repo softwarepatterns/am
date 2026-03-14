@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, setDefaultTimeout } from "bun:test";
 import { Am, AuthSession, AuthError } from "../../src/auth";
 import type { StorageLike, ClientId } from "../../src/types";
 
@@ -6,6 +6,8 @@ const BASE_URL = "https://api.accountmaker.com";
 const CLIENT_ID = process.env.AM_CLIENT_ID as ClientId;
 const TEST_EMAIL = process.env.AM_EMAIL!;
 const TEST_PASSWORD = process.env.AM_PASSWORD!;
+
+setDefaultTimeout(10000);
 
 /**
  * Custom fetch that adds Origin header (required by API for CSRF protection).
