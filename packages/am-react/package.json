@@ -1,0 +1,77 @@
+{
+  "name": "@softwarepatterns/am-react",
+  "version": "0.3.0",
+  "description": "React bindings and auth UI helpers for AccountMaker (Am)",
+  "keywords": [
+    "authentication",
+    "auth",
+    "react",
+    "sdk",
+    "accountmaker"
+  ],
+  "author": "Your Name <info@example.com>",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/softwarepatterns/am/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/softwarepatterns/am.git",
+    "directory": "packages/am-react"
+  },
+  "homepage": "https://github.com/softwarepatterns/am/tree/main/packages/am-react#readme",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:am": "cd ../am && bun run build",
+    "build:clean": "rm -rf dist .tsbuildinfo",
+    "build": "bun run build:clean && bun run build:am && tsc -b tsconfig.build.json",
+    "prepublishOnly": "bun run build",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "typecheck": "bun run build:am && tsc --noEmit",
+    "lint": "oxlint"
+  },
+  "dependencies": {
+    "@radix-ui/react-icons": "^1.3.2",
+    "@softwarepatterns/am": "^0.3.0",
+    "@tanstack/react-query": "^5.90.12",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.23.22",
+    "lucide-react": "^0.544.0",
+    "tailwind-merge": "^3.3.1"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^19.1.15",
+    "@types/react-dom": "^19.1.9",
+    "jsdom": "^25.0.1",
+    "oxlint": "^1.39.0",
+    "react-dom": "^19.1.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "composite": true,
+    "declaration": true,
+    "noEmit": false,
+    "tsBuildInfoFile": "./.tsbuildinfo/tsconfig.build.tsbuildinfo"
+  },
+  "include": ["src"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "src/test-support"
+  ]
+}
