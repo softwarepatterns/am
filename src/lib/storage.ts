@@ -26,7 +26,7 @@ export function getStorageLike(
 ): StorageLike | null {
   if (!storageConfig) return null;
   if (storageConfig === "localStorage") return getBrowserLocalStorage();
-  return null;
+  return storageConfig;
 }
 
 export function readStorage<T>(
