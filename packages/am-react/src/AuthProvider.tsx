@@ -1,3 +1,16 @@
+/**
+ * Provides the headless React auth context for an `Am` instance.
+ *
+ * This file owns the provider and hooks that expose the current session to a
+ * React tree. It also owns the translation from `am` auth events into React
+ * state and callback props.
+ *
+ * Local invariants:
+ * - sessions are obtained from `Am`, never constructed here
+ * - `signedIn` is the only event that replaces React session state
+ * - `authLost` and `reloadRequired` are forwarded without clearing React state
+ * - startup restores or refreshes the current session before marking ready
+ */
 import React, {
   useMemo,
   createContext,
@@ -7,18 +20,41 @@ import React, {
 } from 'react';
 import {
   Am,
-  AuthSession,
   AuthError,
+  type AuthSession,
 } from '@softwarepatterns/am'; // adjust import paths
 import type { SessionProfile, SessionTokens } from '@softwarepatterns/am';
 
 export type AuthProviderProps = {
+  /**
+   * `Am` instance whose session state drives this provider.
+   */
   am: Am;
 
-  onRefresh?: (newTokens: SessionTokens) => void;
-  onProfileChange?: (profile: SessionProfile) => void;
-  onUnauthenticated?: (e: AuthError) => void;
-  onSessionChange?: (session: AuthSession | null) => void;
+  /**
+   * Called when the current session rotates tokens.
+   */
+  onTokensUpdated?: (newTokens: SessionTokens) => void;
+
+  /**
+   * Called when the current session refreshes profile data.
+   */
+  onProfileUpdated?: (profile: SessionProfile) => void;
+
+  /**
+   * Called when auth is lost without requiring a reload.
+   */
+  onAuthLost?: (e: AuthError) => void;
+
+  /**
+   * Called after `Am` establishes the signed-in session.
+   */
+  onSignedIn?: (session: AuthSession) => void | Promise<void>;
+
+  /**
+   * Called when the current session can continue only after a hard reload.
+   */
+  onReloadRequired?: () => void;
 };
 
 export type AuthContextValue = {
@@ -96,10 +132,11 @@ export function AuthProvider(
   const {
     children,
     am,
-    onUnauthenticated,
-    onProfileChange,
-    onRefresh,
-    onSessionChange,
+    onAuthLost,
+    onProfileUpdated,
+    onTokensUpdated,
+    onSignedIn,
+    onReloadRequired,
   } = props;
   const [session, setSession] = useState<AuthSession | null>(null);
   const [isReady, setIsReady] = useState(false);
@@ -108,38 +145,42 @@ export function AuthProvider(
     const unsubs: Array<() => void> = [];
 
     unsubs.push(
-      am.on('sessionChange', (session) => {
+      am.on('signedIn', (session) => {
         const syncSessionState = async () => {
-          if (onSessionChange) {
-            await Promise.resolve(onSessionChange(session));
+          if (onSignedIn) {
+            await Promise.resolve(onSignedIn(session));
           }
           setSession(session);
         };
 
         syncSessionState().catch((error) => {
-          console.error('Failed to apply session change', error);
+          console.error('Failed to apply signed-in state', error);
           setSession(session);
         });
       }),
     );
 
-    unsubs.push(
-      am.on('unauthenticated', (e) => {
-        // Clear the session to prevent further refresh attempts, but do NOT
-        // update React state. The page continues to render during navigation,
-        // and clearing the session from React would cause components to crash.
-        am.session?.clear();
-        if (onUnauthenticated) {
-          onUnauthenticated(e);
-        }
-      }),
-    );
-
-    if (onProfileChange) {
-      unsubs.push(am.on('profileChange', onProfileChange));
+    if (onAuthLost) {
+      // authLost is recoverable. Forward it to the app without changing the
+      // current session state in React.
+      unsubs.push(am.on('authLost', onAuthLost));
     }
-    if (onRefresh) {
-      unsubs.push(am.on('refresh', onRefresh));
+
+    if (onProfileUpdated) {
+      unsubs.push(am.on('profileUpdated', onProfileUpdated));
+    }
+    if (onTokensUpdated) {
+      unsubs.push(am.on('tokensUpdated', onTokensUpdated));
+    }
+    if (onReloadRequired) {
+      unsubs.push(
+        am.on('reloadRequired', () => {
+          // Keep the current session in React while the app performs a hard
+          // navigation. Clearing it early can crash components during the
+          // transition.
+          onReloadRequired();
+        }),
+      );
     }
 
     (async () => {
@@ -149,7 +190,7 @@ export function AuthProvider(
           await currentSession.refresh();
           setSession(currentSession);
         } catch {
-          currentSession.clear();
+          setSession(null);
         }
       } else {
         // Sync non-expired initial session
@@ -159,7 +200,7 @@ export function AuthProvider(
     })().catch(console.error);
 
     return () => unsubs.forEach((u) => u());
-  }, [am, onProfileChange, onRefresh, onUnauthenticated, onSessionChange]);
+  }, [am, onAuthLost, onProfileUpdated, onReloadRequired, onSignedIn, onTokensUpdated]);
 
   const value = useMemo<AuthContextValue>(
     () => ({ auth: am, session, isReady }),

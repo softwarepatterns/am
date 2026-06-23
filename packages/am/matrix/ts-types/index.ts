@@ -1,4 +1,5 @@
 import type {
+  AuthSession,
   Authentication,
   SessionTokens,
   SessionProfile,
@@ -6,7 +7,7 @@ import type {
   StorageLike,
   ProblemDetails,
 } from "@softwarepatterns/am";
-import { Am, AuthError, AuthSession } from "@softwarepatterns/am";
+import { Am, AuthError } from "@softwarepatterns/am";
 
 // Test: Types are importable and usable
 const clientId: ClientId = "cid_test";

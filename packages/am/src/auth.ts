@@ -40,15 +40,17 @@ const AUTH_STATE = Symbol("auth_state");
 const EMITTER = Symbol("emitter");
 
 type AuthEventMap = {
-  refresh: SessionTokens;
-  profileChange: SessionProfile;
-  unauthenticated: AuthError;
-  sessionChange: AuthSession | null;
-};
+  tokensUpdated: SessionTokens;
+  profileUpdated: SessionProfile;
+  authLost: AuthError;
+  signedIn: AuthSession;
+  reloadRequired: void;
+}
+type AuthEvent = keyof AuthEventMap;
 
 type AuthState = {
   config: Config;
-  listeners: { [K in keyof AuthEventMap]?: Set<(v: AuthEventMap[K]) => void> };
+  listeners: { [K in AuthEvent]?: Set<(v: AuthEventMap[K]) => void> };
 };
 
 function clearAuth(config: Config) {
@@ -58,7 +60,13 @@ function clearAuth(config: Config) {
 }
 
 function getSessionState(session: AuthSession): SessionState {
-  return (session as any)[SESSION_STATE] as SessionState;
+  const state = (session as any)[SESSION_STATE];
+  if (!state) {
+    throw new Error(
+      "AuthSession is not initialized. Use Am.createSession() or Am.restoreSession() to create a session.",
+    );
+  }
+  return state as SessionState;
 }
 
 function setSessionState(session: AuthSession, state: SessionState) {
@@ -81,7 +89,7 @@ function setAuthSession(am: Am, session: AuthSession) {
   (am as any)[AUTH_SESSION] = session;
   const sessionState = getSessionState(session);
   setSessionStateEmitter(sessionState, am);
-  emitSessionStateEvent(sessionState, "sessionChange", session);
+  emitSessionStateEvent(sessionState, "signedIn", session);
 }
 
 function setSessionStateEmitter(sessionState: SessionState, am: Am) {
@@ -102,10 +110,10 @@ function setSessionStateEmitter(sessionState: SessionState, am: Am) {
   };
 }
 
-function emitSessionStateEvent<K extends keyof AuthEventMap>(
+function emitSessionStateEvent(
   sessionState: SessionState,
-  event: K,
-  value: AuthEventMap[K],
+  event: AuthEvent,
+  value: AuthEventMap[typeof event],
 ) {
   const emit = (sessionState as any)[EMITTER];
   emit(event, value);
@@ -132,9 +140,9 @@ const fetchSessionResponseEnsureFresh = async (
   const res1 = await fetchFn(url, updateBearer(init, state.tokens.accessToken));
 
   if (res1.status !== 401) return res1;
-  if (state.cleared) return res1;
+  if (state.reloadRequired) return res1;
 
-  await refresh(state); // may throw AuthError (emits unauthenticated on 401)
+  await refresh(state); // may throw AuthError (emits authLost on 401)
   const res2 = await fetchFn(url, updateBearer(init, state.tokens.accessToken));
   return res2;
 };
@@ -193,7 +201,7 @@ const unauthPost = async (
 };
 
 const refresh = async (state: SessionState): Promise<void> => {
-  if (state.cleared) return;
+  if (state.reloadRequired) return;
 
   if (!state.refreshPromise) {
     state.refreshPromise = doRefresh(state);
@@ -252,8 +260,8 @@ function setSessionAuthentication(
   writeTokensIfNewer(storage, state.config.tokensStorageKey, state.tokens);
   writeProfileIfNewer(storage, state.config.profileStorageKey, state.profile);
 
-  emitSessionStateEvent(state, "refresh", state.tokens);
-  emitSessionStateEvent(state, "profileChange", state.profile);
+  emitSessionStateEvent(state, "tokensUpdated", state.tokens);
+  emitSessionStateEvent(state, "profileUpdated", state.profile);
 }
 
 async function doRefresh(state: SessionState): Promise<void> {
@@ -271,8 +279,8 @@ async function doRefresh(state: SessionState): Promise<void> {
   try {
     json = await handleJsonOrThrow(res);
   } catch (e) {
-    if (!state.cleared && isUnauthenticatedAuthError(e)) {
-      emitSessionStateEvent(state, "unauthenticated", e);
+    if (!state.reloadRequired && isUnauthenticatedAuthError(e)) {
+      emitSessionStateEvent(state, "authLost", e);
     }
     throw e;
   }
@@ -283,7 +291,17 @@ async function doRefresh(state: SessionState): Promise<void> {
   const storage = getStorageLike(state.config.storage);
   writeTokensIfNewer(storage, state.config.tokensStorageKey, tokens);
 
-  emitSessionStateEvent(state, "refresh", tokens);
+  emitSessionStateEvent(state, "tokensUpdated", tokens);
+}
+
+/**
+ * Marks the session as requiring a reload. This is used when the session is cleared or switched to another account.
+ * Once set, the session will not attempt to refresh tokens or profile data, and will emit a "reloadRequired" event.
+ */
+function setReloadRequired(state: SessionState): void {
+  if (state.reloadRequired) return;
+  state.reloadRequired = true;
+  emitSessionStateEvent(state, "reloadRequired", undefined);
 }
 
 async function doRefetchProfile(state: SessionState): Promise<void> {
@@ -293,7 +311,7 @@ async function doRefetchProfile(state: SessionState): Promise<void> {
   const storage = getStorageLike(state.config.storage);
   writeProfileIfNewer(storage, state.config.profileStorageKey, profile);
 
-  emitSessionStateEvent(state, "profileChange", profile);
+  emitSessionStateEvent(state, "profileUpdated", profile);
 }
 
 const handleAuthenticationResponse = (json: any): Authentication => {
@@ -303,14 +321,31 @@ const handleAuthenticationResponse = (json: any): Authentication => {
   };
 };
 
-async function doSwitchAccounts(
-  state: SessionState,
-  body: { accountId: AccountId; csrfToken?: string },
-): Promise<void> {
-  const authentication = handleAuthenticationResponse(
-    await authPost(state, "/auth/switch-accounts", body),
-  );
-  setSessionAuthentication(state, authentication);
+const createAuthSession = (initial: Authentication, config: Partial<Config>, amInstance: Am): AuthSession => {
+  const session = new AuthSession();
+  const merged = createConfig(config);
+
+  const state: SessionState = {
+    ...initial,
+    config: merged,
+    refreshPromise: null,
+    profilePromise: null,
+    reloadRequired: false,
+  };
+
+  setSessionState(session, state);
+
+  const storage = getStorageLike(merged.storage);
+  writeTokensIfNewer(storage, merged.tokensStorageKey, state.tokens);
+
+  if (state.profile) {
+    // similar helper for profile
+    writeProfileIfNewer(storage, merged.profileStorageKey, state.profile);
+  }
+
+  setAuthSession(amInstance, session);
+
+  return session;
 }
 
 /**
@@ -319,28 +354,6 @@ async function doSwitchAccounts(
  * AuthSession owns tokens, profile data, refresh logic, and authenticated requests.
  */
 export class AuthSession {
-  constructor(initial: Authentication, config: Partial<Config>) {
-    const merged = createConfig(config);
-
-    const state: SessionState = {
-      ...initial,
-      config: merged,
-      refreshPromise: null,
-      profilePromise: null,
-      cleared: false,
-    };
-
-    setSessionState(this, state);
-
-    const storage = getStorageLike(merged.storage);
-    writeTokensIfNewer(storage, merged.tokensStorageKey, state.tokens);
-
-    if (state.profile) {
-      // similar helper for profile
-      writeProfileIfNewer(storage, merged.profileStorageKey, state.profile);
-    }
-  }
-
   /**
    * Removes all persisted data (tokens, profile) from storage, and prevents future
    * refreshes of token and profile data. Does NOT clear current token or profile data from the
@@ -349,7 +362,7 @@ export class AuthSession {
   clear(): void {
     const state = getSessionState(this);
     clearAuth(state.config);
-    state.cleared = true;
+    setReloadRequired(state);
   }
 
   get tokens(): SessionTokens {
@@ -363,17 +376,6 @@ export class AuthSession {
   toJSON(): Authentication {
     const state = getSessionState(this);
     return { tokens: state.tokens, profile: state.profile };
-  }
-
-  /**
-   * Creates an AuthSession from existing authentication data. Useful for restoring
-   * a session from custom storage or creating a session from custom server-provided data.
-   */
-  static fromJSON(
-    initial: Authentication,
-    config: Partial<Config>,
-  ): AuthSession {
-    return new AuthSession(initial, config);
   }
 
   /**
@@ -428,7 +430,7 @@ export class AuthSession {
    */
   async refetchProfile(): Promise<void> {
     const state = getSessionState(this);
-    if (state.cleared) {
+    if (state.reloadRequired) {
       // silently do nothing
       return;
     }
@@ -451,7 +453,12 @@ export class AuthSession {
     accountId: AccountId;
     csrfToken?: string;
   }): Promise<void> {
-    await doSwitchAccounts(getSessionState(this), body);
+    const state = getSessionState(this);
+    const authentication = handleAuthenticationResponse(
+      await authPost(state, "/auth/switch-accounts", body),
+    );
+    setSessionAuthentication(state, authentication);
+    setReloadRequired(state);
   }
 
   /**
@@ -506,9 +513,7 @@ export class Am {
    * Use this after a server-side auth handshake or custom persistence.
    */
   createSession(initial: Authentication): AuthSession {
-    const session = new AuthSession(initial, getAuthState(this).config);
-    setAuthSession(this, session);
-    return session;
+    return createAuthSession(initial, getAuthState(this).config, this);
   }
 
   /**
@@ -537,9 +542,7 @@ export class Am {
       return null;
     }
 
-    const session = new AuthSession({ tokens, profile }, config);
-    setAuthSession(this, session);
-    return session;
+    return createAuthSession({ tokens, profile }, config, this);
   }
 
   /**
@@ -567,9 +570,7 @@ export class Am {
     const initial = handleAuthenticationResponse(
       await unauthGet(config, "/auth/accept-invite", query),
     );
-    const session = new AuthSession(initial, config);
-    setAuthSession(this, session);
-    return session;
+    return createAuthSession(initial, config, this);
   }
 
   /**
@@ -640,9 +641,7 @@ export class Am {
       await unauthPost(config, "/auth/sign-in", body),
     );
 
-    const session = new AuthSession(initial, config);
-    setAuthSession(this, session);
-    return session;
+    return createAuthSession(initial, config, this);
   }
 
   /**
@@ -658,9 +657,7 @@ export class Am {
       }),
     );
 
-    const session = new AuthSession(initial, config);
-    setAuthSession(this, session);
-    return session;
+    return createAuthSession(initial, config, this);
   }
 
   /**
@@ -679,9 +676,7 @@ export class Am {
       await unauthPost(config, "/auth/sign-up", body),
     );
 
-    const session = new AuthSession(initial, config);
-    setAuthSession(this, session);
-    return session;
+    return createAuthSession(initial, config, this);
   }
 
   /**

@@ -61,9 +61,9 @@ function createValidProfile(): SessionProfile {
   };
 }
 
-describe("Unauthenticated Event", () => {
-  describe("when request returns 401 and refresh returns 401", () => {
-    it("emits unauthenticated event", async () => {
+describe("authLost", () => {
+  describe("when refresh fails with a 401 auth error", () => {
+    it("emits authLost and does not emit reloadRequired", async () => {
       const mockFetch = createMockFetch([
         // First request returns 401
         { status: 401, body: { type: "about:blank", title: "Unauthorized", status: 401 } },
@@ -82,9 +82,13 @@ describe("Unauthenticated Event", () => {
         profile: createValidProfile(),
       });
 
-      let unauthenticatedError: AuthError | null = null;
-      am.on("unauthenticated", (error) => {
-        unauthenticatedError = error;
+      let authLostError: AuthError | null = null;
+      let reloadRequiredCount = 0;
+      am.on("authLost", (error) => {
+        authLostError = error;
+      });
+      am.on("reloadRequired", () => {
+        reloadRequiredCount += 1;
       });
 
       try {
@@ -93,14 +97,15 @@ describe("Unauthenticated Event", () => {
         // Expected to throw
       }
 
-      expect(unauthenticatedError).not.toBeNull();
-      expect(unauthenticatedError).toBeInstanceOf(AuthError);
-      expect(unauthenticatedError!.status).toBe(401);
+      expect(authLostError).not.toBeNull();
+      expect(authLostError).toBeInstanceOf(AuthError);
+      expect(authLostError!.status).toBe(401);
+      expect(reloadRequiredCount).toBe(0);
     });
   });
 
-  describe("when request returns 401 but refresh succeeds", () => {
-    it("does not emit unauthenticated event", async () => {
+  describe("when refresh succeeds", () => {
+    it("does not emit authLost", async () => {
       const mockFetch = createMockFetch([
         // First request returns 401
         { status: 401, body: { type: "about:blank", title: "Unauthorized", status: 401 } },
@@ -129,19 +134,19 @@ describe("Unauthenticated Event", () => {
         profile: createValidProfile(),
       });
 
-      let unauthenticatedFired = false;
-      am.on("unauthenticated", () => {
-        unauthenticatedFired = true;
+      let authLostFired = false;
+      am.on("authLost", () => {
+        authLostFired = true;
       });
 
       await session.fetch("/api/protected");
 
-      expect(unauthenticatedFired).toBe(false);
+      expect(authLostFired).toBe(false);
     });
   });
 
-  describe("when request returns 401 and refresh returns 500", () => {
-    it("does not emit unauthenticated event (server error is not auth failure)", async () => {
+  describe("when refresh fails for a non-auth reason", () => {
+    it("does not emit authLost for a server error", async () => {
       const mockFetch = createMockFetch([
         // First request returns 401
         { status: 401, body: { type: "about:blank", title: "Unauthorized", status: 401 } },
@@ -160,9 +165,9 @@ describe("Unauthenticated Event", () => {
         profile: createValidProfile(),
       });
 
-      let unauthenticatedFired = false;
-      am.on("unauthenticated", () => {
-        unauthenticatedFired = true;
+      let authLostFired = false;
+      am.on("authLost", () => {
+        authLostFired = true;
       });
 
       try {
@@ -171,12 +176,10 @@ describe("Unauthenticated Event", () => {
         // Expected to throw
       }
 
-      expect(unauthenticatedFired).toBe(false);
+      expect(authLostFired).toBe(false);
     });
-  });
 
-  describe("when request returns 401 and refresh times out", () => {
-    it("does not emit unauthenticated event (network error is not auth failure)", async () => {
+    it("does not emit authLost for a network error", async () => {
       let callCount = 0;
       const mockFetch = async (_input: RequestInfo | URL, _init?: RequestInit) => {
         callCount++;
@@ -205,9 +208,9 @@ describe("Unauthenticated Event", () => {
         profile: createValidProfile(),
       });
 
-      let unauthenticatedFired = false;
-      am.on("unauthenticated", () => {
-        unauthenticatedFired = true;
+      let authLostFired = false;
+      am.on("authLost", () => {
+        authLostFired = true;
       });
 
       try {
@@ -216,12 +219,12 @@ describe("Unauthenticated Event", () => {
         // Expected to throw network error
       }
 
-      expect(unauthenticatedFired).toBe(false);
+      expect(authLostFired).toBe(false);
     });
   });
 
-  describe("when tokens are expired and refresh returns 401", () => {
-    it("emits unauthenticated event", async () => {
+  describe("recoverability", () => {
+    it("emits authLost when expired tokens cannot be refreshed", async () => {
       const mockFetch = createMockFetch([
         // Refresh attempt (triggered by expired tokens) returns 401
         { status: 401, body: { type: "about:blank", title: "Invalid refresh token", status: 401 } },
@@ -238,9 +241,13 @@ describe("Unauthenticated Event", () => {
         profile: createValidProfile(),
       });
 
-      let unauthenticatedError: AuthError | null = null;
-      am.on("unauthenticated", (error) => {
-        unauthenticatedError = error;
+      let authLostError: AuthError | null = null;
+      let reloadRequiredCount = 0;
+      am.on("authLost", (error) => {
+        authLostError = error;
+      });
+      am.on("reloadRequired", () => {
+        reloadRequiredCount += 1;
       });
 
       try {
@@ -249,14 +256,53 @@ describe("Unauthenticated Event", () => {
         // Expected to throw
       }
 
-      expect(unauthenticatedError).not.toBeNull();
-      expect(unauthenticatedError).toBeInstanceOf(AuthError);
-      expect(unauthenticatedError!.status).toBe(401);
+      expect(authLostError).not.toBeNull();
+      expect(authLostError).toBeInstanceOf(AuthError);
+      expect(authLostError!.status).toBe(401);
+      expect(reloadRequiredCount).toBe(0);
+    });
+
+    it("remains recoverable after authLost", async () => {
+      const mockFetch = createMockFetch([
+        { status: 401, body: { type: "about:blank", title: "Unauthorized", status: 401 } },
+        { status: 401, body: { type: "about:blank", title: "Invalid refresh token", status: 401 } },
+        {
+          status: 200,
+          body: {
+            access_token: "recovered_access_token",
+            refresh_token: "recovered_refresh_token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          },
+        },
+      ]);
+
+      const am = new Am({
+        baseUrl: "https://api.example.com",
+        storage: null,
+        fetchFn: mockFetch,
+      });
+
+      const session = am.createSession({
+        tokens: createValidTokens(),
+        profile: createValidProfile(),
+      });
+
+      let authLostCount = 0;
+      am.on("authLost", () => {
+        authLostCount += 1;
+      });
+
+      await expect(session.fetch("/api/protected")).rejects.toBeInstanceOf(AuthError);
+      await session.refresh();
+
+      expect(authLostCount).toBe(1);
+      expect(session.tokens.accessToken).toBe("recovered_access_token");
     });
   });
 
-  describe("when session is cleared", () => {
-    it("does not emit unauthenticated event even if refresh would fail", async () => {
+  describe("when the session is reloadRequired", () => {
+    it("does not emit authLost even if refresh would otherwise fail", async () => {
       const mockFetch = createMockFetch([
         // First request returns 401
         { status: 401, body: { type: "about:blank", title: "Unauthorized", status: 401 } },
@@ -273,9 +319,9 @@ describe("Unauthenticated Event", () => {
         profile: createValidProfile(),
       });
 
-      let unauthenticatedFired = false;
-      am.on("unauthenticated", () => {
-        unauthenticatedFired = true;
+      let authLostFired = false;
+      am.on("authLost", () => {
+        authLostFired = true;
       });
 
       session.clear();
@@ -283,12 +329,12 @@ describe("Unauthenticated Event", () => {
       const response = await session.fetch("/api/protected");
       // Should return the 401 response without attempting refresh
       expect(response.status).toBe(401);
-      expect(unauthenticatedFired).toBe(false);
+      expect(authLostFired).toBe(false);
     });
   });
 
-  describe("when calling refresh() directly and it returns 401", () => {
-    it("emits unauthenticated event", async () => {
+  describe("when refresh() itself returns 401", () => {
+    it("emits authLost", async () => {
       const mockFetch = createMockFetch([
         // Refresh returns 401
         { status: 401, body: { type: "about:blank", title: "Invalid refresh token", status: 401 } },
@@ -305,9 +351,9 @@ describe("Unauthenticated Event", () => {
         profile: createValidProfile(),
       });
 
-      let unauthenticatedError: AuthError | null = null;
-      am.on("unauthenticated", (error) => {
-        unauthenticatedError = error;
+      let authLostError: AuthError | null = null;
+      am.on("authLost", (error) => {
+        authLostError = error;
       });
 
       try {
@@ -316,8 +362,8 @@ describe("Unauthenticated Event", () => {
         // Expected to throw
       }
 
-      expect(unauthenticatedError).not.toBeNull();
-      expect(unauthenticatedError!.status).toBe(401);
+      expect(authLostError).not.toBeNull();
+      expect(authLostError!.status).toBe(401);
     });
   });
 });

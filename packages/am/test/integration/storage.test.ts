@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, setDefaultTimeout } from "bun:test";
-import { Am, AuthSession } from "../../src/auth";
+import { Am } from "../../src/auth";
 import type { StorageLike, ClientId } from "../../src/types";
 
 const BASE_URL = "https://api.accountmaker.com";
@@ -338,7 +338,7 @@ describe("Storage Integration Tests", () => {
     });
   });
 
-  describe("Session Clearing", () => {
+  describe("Reload-Required Session Behavior", () => {
     it("removes all persisted data when session is cleared", async () => {
       const am = new Am({
         baseUrl: BASE_URL,
@@ -641,7 +641,7 @@ describe("Storage Integration Tests", () => {
         password: TEST_PASSWORD,
       });
 
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.fetch).toBe("function");
       expect(session.tokens.accessToken).toBeDefined();
     });
 

@@ -30,26 +30,31 @@ export function createSessionFromServerAuthentication() {
 }
 
 export function subscribeToAuthEvents() {
-  const stopSessionChange = am.on('sessionChange', (session) => {
-    console.log('sessionChange', session?.profile.id ?? null);
+  const stopSignedIn = am.on('signedIn', (session) => {
+    console.log('signedIn', session.profile.id);
   });
 
-  const stopUnauthenticated = am.on('unauthenticated', (error) => {
-    console.log('unauthenticated', error.status, error.title);
+  const stopAuthLost = am.on('authLost', (error) => {
+    console.log('authLost', error.status, error.title);
   });
 
-  const stopProfileChange = am.on('profileChange', (profile) => {
-    console.log('profileChange', profile.lastUpdatedAt);
+  const stopProfileUpdated = am.on('profileUpdated', (profile) => {
+    console.log('profileUpdated', profile.lastUpdatedAt);
   });
 
-  const stopRefresh = am.on('refresh', (tokens) => {
-    console.log('refresh', tokens.expiresAt);
+  const stopTokensUpdated = am.on('tokensUpdated', (tokens) => {
+    console.log('tokensUpdated', tokens.expiresAt);
+  });
+
+  const stopReloadRequired = am.on('reloadRequired', () => {
+    console.log('reloadRequired');
   });
 
   return () => {
-    stopSessionChange();
-    stopUnauthenticated();
-    stopProfileChange();
-    stopRefresh();
+    stopSignedIn();
+    stopAuthLost();
+    stopProfileUpdated();
+    stopTokensUpdated();
+    stopReloadRequired();
   };
 }

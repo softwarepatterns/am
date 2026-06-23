@@ -14,7 +14,7 @@ function SessionObserver() {
 }
 
 function redirectToSignIn(error: AuthError) {
-  console.log('Unauthenticated', error.status, error.title);
+  console.log('Auth lost', error.status, error.title);
   window.location.assign('/sign-in');
 }
 
@@ -22,16 +22,19 @@ export function App() {
   return (
     <AuthProvider
       am={am}
-      onRefresh={(tokens) => {
-        console.log('Token refresh', tokens.expiresAt);
+      onTokensUpdated={(tokens) => {
+        console.log('Tokens updated', tokens.expiresAt);
       }}
-      onProfileChange={(profile) => {
-        console.log('Profile changed', profile.lastUpdatedAt);
+      onProfileUpdated={(profile) => {
+        console.log('Profile updated', profile.lastUpdatedAt);
       }}
-      onSessionChange={(session) => {
-        console.log('Session changed', session?.profile.id ?? null);
+      onSignedIn={(session) => {
+        console.log('Signed in', session.profile.id);
       }}
-      onUnauthenticated={redirectToSignIn}
+      onAuthLost={redirectToSignIn}
+      onReloadRequired={() => {
+        window.location.assign(window.location.href);
+      }}
     >
       <SessionObserver />
     </AuthProvider>

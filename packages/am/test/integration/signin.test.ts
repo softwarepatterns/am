@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, setDefaultTimeout } from "bun:test";
-import { Am, AuthSession } from "../../src/auth";
+import { Am } from "../../src/auth";
 import { AuthError } from "../../src/lib/auth-error";
 import type { StorageLike, ClientId } from "../../src/types";
 
@@ -51,7 +51,7 @@ describe("SignIn Integration Tests", () => {
   });
 
   describe("Successful Authentication", () => {
-    it("returns an AuthSession when credentials are valid", async () => {
+    it("returns a session when credentials are valid", async () => {
       const am = new Am({
         baseUrl: BASE_URL,
         storage,
@@ -64,7 +64,8 @@ describe("SignIn Integration Tests", () => {
         password: TEST_PASSWORD,
       });
 
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.fetch).toBe("function");
+      expect(typeof session.refresh).toBe("function");
     });
 
     it("returns tokens with access token, refresh token, and expiration", async () => {
@@ -285,15 +286,15 @@ describe("SignIn Integration Tests", () => {
   });
 
   describe("Event Notifications", () => {
-    it("emits sessionChange event when sign-in succeeds", async () => {
+    it("emits signedIn event when sign-in succeeds", async () => {
       const am = new Am({
         baseUrl: BASE_URL,
         storage,
         fetchFn: fetchWithOrigin,
       });
 
-      let receivedSession: AuthSession | null = null;
-      am.on("sessionChange", (session) => {
+      let receivedSession: ReturnType<Am["createSession"]> | null = null;
+      am.on("signedIn", (session) => {
         receivedSession = session;
       });
 
@@ -306,7 +307,7 @@ describe("SignIn Integration Tests", () => {
       expect(receivedSession).toBe(session);
     });
 
-    it("does not emit sessionChange event when sign-in fails", async () => {
+    it("does not emit signedIn event when sign-in fails", async () => {
       const am = new Am({
         baseUrl: BASE_URL,
         storage,
@@ -314,7 +315,7 @@ describe("SignIn Integration Tests", () => {
       });
 
       let eventFired = false;
-      am.on("sessionChange", () => {
+      am.on("signedIn", () => {
         eventFired = true;
       });
 
@@ -356,7 +357,7 @@ describe("SignIn Integration Tests", () => {
       expect(am.session).not.toBe(session1);
     });
 
-    it("each sign-in returns a new AuthSession instance", async () => {
+    it("each sign-in returns a new session instance", async () => {
       const am = new Am({
         baseUrl: BASE_URL,
         storage,
@@ -433,8 +434,8 @@ describe("SignIn Integration Tests", () => {
         }),
       ]);
 
-      expect(session1).toBeInstanceOf(AuthSession);
-      expect(session2).toBeInstanceOf(AuthSession);
+      expect(typeof session1.fetch).toBe("function");
+      expect(typeof session2.fetch).toBe("function");
       expect(session1.tokens.accessToken).not.toBe(session2.tokens.accessToken);
     });
   });

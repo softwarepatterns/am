@@ -8,10 +8,11 @@ This package provides a small, stable client for interacting with the AccountMak
 
 ## Features
 
-* Automatic access-token refresh
+* Sessions are created through `Am` auth and restore methods
+* Automatic access-token refresh until the session requires a hard reload
 * TypeScript-first API with bundled `.d.ts`
 * Explicit error modeling via RFC 9457 Problem Details
-* Automatic access-token refresh
+* Typed auth lifecycle events
 * No runtime dependencies or side effects on import
 * ESM and CommonJS support
 
@@ -97,13 +98,10 @@ const session = await am.acceptInvite({
 ### Sign in with a token from an email link
 
 ```ts
-const session = await am.signInWithToken({
-  clientId: "your-client-id",
-  token: "token-from-email",
-});
+const session = await am.signInWithToken("token-from-email");
 ```
 
-## Usage
+## Sessions
 
 A session represents an authenticated user and handles token refresh automatically.
 
@@ -120,10 +118,51 @@ if (session.isExpired()) {
 }
 await fetch("https://yourdomain.com/your/own/protected/api", {
   headers: {
-    Authorization: `Bearer ${session.accessToken()}`
+    Authorization: `Bearer ${session.tokens.accessToken}`
   }
 });
 ```
+
+Sessions are produced by `Am` methods such as `signIn()`, `signUp()`,
+`signInWithToken()`, `acceptInvite()`, `createSession()`, and
+`restoreSession()`.
+
+## Auth events
+
+Subscribe to auth lifecycle events with `am.on(...)`.
+
+```ts
+const stopSignedIn = am.on("signedIn", (session) => {
+  console.log("signedIn", session.profile.id);
+});
+
+const stopAuthLost = am.on("authLost", (error) => {
+  console.log("authLost", error.status, error.title);
+});
+
+const stopProfileUpdated = am.on("profileUpdated", (profile) => {
+  console.log("profileUpdated", profile.lastUpdatedAt);
+});
+
+const stopTokensUpdated = am.on("tokensUpdated", (tokens) => {
+  console.log("tokensUpdated", tokens.expiresAt);
+});
+
+const stopReloadRequired = am.on("reloadRequired", () => {
+  window.location.reload();
+});
+```
+
+Event meaning:
+
+* `signedIn`: a session was established through `Am`
+* `tokensUpdated`: session tokens rotated
+* `profileUpdated`: session profile refreshed
+* `authLost`: auth was lost but the runtime is still recoverable
+* `reloadRequired`: the current session can continue only after a hard reload
+
+After `reloadRequired`, the current runtime should hard-navigate before doing
+more session work. `authLost` does not carry that requirement.
 
 Your own services can validate the access token using AM's public keys.
 
@@ -156,7 +195,7 @@ const am = new Am({
 });
 ```
 
-Set to "localStorage" to persist sessions across reloads.
+Set to `"localStorage"` to persist sessions across reloads.
 
 ```ts
 const am = new Am({

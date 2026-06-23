@@ -3,7 +3,7 @@
 Headless React auth adapter for **AccountMaker (Am)**.
 
 This package exposes the React provider and hook for an `Am` instance and its
-current `AuthSession`.
+current session.
 
 Examples live in [`examples/`](./examples).
 
@@ -36,6 +36,20 @@ export function App() {
   );
 }
 ```
+
+## Callback props
+
+`AuthProvider` exposes auth lifecycle callbacks that mirror the core `am`
+events:
+
+- `onSignedIn`
+- `onTokensUpdated`
+- `onProfileUpdated`
+- `onAuthLost`
+- `onReloadRequired`
+
+`onAuthLost` is for recoverable client-side auth loss. `onReloadRequired` is
+the terminal transition that should end in a hard navigation.
 
 ## Exports
 

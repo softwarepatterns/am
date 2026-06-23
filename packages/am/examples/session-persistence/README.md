@@ -8,7 +8,7 @@ authentication payload.
 
 - `restoreSession()` for client-side persistence
 - `createSession()` for server-provided tokens/profile
-- `on()` for `sessionChange`, `unauthenticated`, `profileChange`, and `refresh`
+- `on()` for `signedIn`, `authLost`, `profileUpdated`, `tokensUpdated`, and `reloadRequired`
 
 ## Inputs you must provide
 
@@ -17,9 +17,10 @@ authentication payload.
 
 ## What happens next
 
-After restore or creation, the returned `AuthSession` becomes the active session
-on the `Am` instance. Event subscriptions let the rest of your app react to
-auth changes.
+After restore or creation, the returned session becomes the active session on
+the `Am` instance. Event subscriptions let the rest of your app react to
+sign-in, token/profile updates, recoverable auth loss, and hard-reload
+transitions.
 
 ## Files
 

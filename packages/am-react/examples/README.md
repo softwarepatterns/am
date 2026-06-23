@@ -12,4 +12,4 @@ Open the folder that matches the rendering or routing problem you are solving.
 
 - `basic-provider/`: mount auth state at the app root and render signed-in vs signed-out UI
 - `required-auth-route/`: protect a route and only call `useRequiredAuth()` after session gating
-- `auth-callbacks/`: attach app-level side effects for refresh, profile updates, session changes, and unauthenticated redirects
+- `auth-callbacks/`: attach app-level side effects for sign-in, token/profile updates, auth loss, and reload-required navigation

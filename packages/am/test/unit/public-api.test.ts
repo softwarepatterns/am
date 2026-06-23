@@ -4,7 +4,7 @@
  * They mock fetchFn to avoid network calls.
  */
 import { describe, it, expect } from "bun:test";
-import { Am, AuthSession } from "../../src/auth";
+import { Am } from "../../src/auth";
 import { AuthError } from "../../src/lib/auth-error";
 import type {
   SessionTokens,
@@ -72,6 +72,37 @@ function createMockStorage(): StorageLike {
     removeItem: (key) => data.delete(key),
   };
 }
+
+function createEventLog(am: Am) {
+  const tokensUpdated: SessionTokens[] = [];
+  const profileUpdated: SessionProfile[] = [];
+  const authLost: AuthError[] = [];
+  let reloadRequiredCount = 0;
+
+  am.on("tokensUpdated", (tokens) => {
+    tokensUpdated.push(tokens);
+  });
+  am.on("profileUpdated", (profile) => {
+    profileUpdated.push(profile);
+  });
+  am.on("authLost", (error) => {
+    authLost.push(error);
+  });
+  am.on("reloadRequired", () => {
+    reloadRequiredCount += 1;
+  });
+
+  return {
+    tokensUpdated,
+    profileUpdated,
+    authLost,
+    get reloadRequiredCount() {
+      return reloadRequiredCount;
+    },
+  };
+}
+
+type Session = ReturnType<Am["createSession"]>;
 
 // ============================================================================
 // AuthError
@@ -162,7 +193,7 @@ describe("Am", () => {
       expect(am.session).toBeNull();
     });
 
-    it("returns AuthSession after createSession", () => {
+    it("returns a session after createSession", () => {
       const am = new Am();
       const session = am.createSession(createValidAuthentication());
       expect(am.session).toBe(session);
@@ -170,10 +201,11 @@ describe("Am", () => {
   });
 
   describe("createSession", () => {
-    it("accepts Authentication and returns AuthSession", () => {
+    it("accepts Authentication and returns an operable session", () => {
       const am = new Am();
       const session = am.createSession(createValidAuthentication());
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.fetch).toBe("function");
+      expect(typeof session.refresh).toBe("function");
     });
 
     it("returned session has tokens", () => {
@@ -202,51 +234,58 @@ describe("Am", () => {
       expect(am.restoreSession()).toBeNull();
     });
 
-    it("returns AuthSession when valid data exists in storage", () => {
+    it("returns a session when valid data exists in storage", () => {
       const storage = createMockStorage();
       storage.setItem("am_tokens", JSON.stringify(createValidTokens()));
       storage.setItem("am_profile", JSON.stringify(createValidProfile()));
 
       const am = new Am({ storage });
       const session = am.restoreSession();
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(session).not.toBeNull();
+      expect(typeof session?.fetch).toBe("function");
     });
   });
 
   describe("on", () => {
     it("returns unsubscribe function", () => {
       const am = new Am();
-      const unsubscribe = am.on("sessionChange", () => {});
+      const unsubscribe = am.on("signedIn", () => {});
       expect(typeof unsubscribe).toBe("function");
     });
 
-    it("accepts sessionChange event", () => {
+    it("accepts signedIn event", () => {
       const am = new Am();
-      const unsub = am.on("sessionChange", (_session) => {});
+      const unsub = am.on("signedIn", (_session) => {});
       unsub();
     });
 
-    it("accepts refresh event", () => {
+    it("accepts tokensUpdated event", () => {
       const am = new Am();
-      const unsub = am.on("refresh", (_tokens) => {});
+      const unsub = am.on("tokensUpdated", (_tokens) => {});
       unsub();
     });
 
-    it("accepts profileChange event", () => {
+    it("accepts profileUpdated event", () => {
       const am = new Am();
-      const unsub = am.on("profileChange", (_profile) => {});
+      const unsub = am.on("profileUpdated", (_profile) => {});
       unsub();
     });
 
-    it("accepts unauthenticated event", () => {
+    it("accepts authLost event", () => {
       const am = new Am();
-      const unsub = am.on("unauthenticated", (_error) => {});
+      const unsub = am.on("authLost", (_error) => {});
+      unsub();
+    });
+
+    it("accepts reloadRequired event", () => {
+      const am = new Am();
+      const unsub = am.on("reloadRequired", () => {});
       unsub();
     });
   });
 
   describe("signIn", () => {
-    it("accepts clientId, email, password and returns Promise<AuthSession>", async () => {
+    it("accepts clientId, email, password and returns a session promise", async () => {
       const am = new Am({
         fetchFn: createMockFetch({
           status: 200,
@@ -276,7 +315,7 @@ describe("Am", () => {
         password: "password123",
       });
 
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.fetch).toBe("function");
     });
 
     it("accepts optional csrfToken", async () => {
@@ -297,7 +336,7 @@ describe("Am", () => {
         csrfToken: "csrf_token",
       });
 
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.refresh).toBe("function");
     });
 
     it("throws AuthError on failure", async () => {
@@ -315,7 +354,7 @@ describe("Am", () => {
   });
 
   describe("signUp", () => {
-    it("accepts clientId, email, password and returns Promise<AuthSession>", async () => {
+    it("accepts clientId, email, password and returns a session promise", async () => {
       const am = new Am({
         fetchFn: createMockFetch({
           status: 200,
@@ -332,12 +371,12 @@ describe("Am", () => {
         password: "password123",
       });
 
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.fetch).toBe("function");
     });
   });
 
   describe("signInWithToken", () => {
-    it("accepts token string and returns Promise<AuthSession>", async () => {
+    it("accepts token string and returns a session promise", async () => {
       const am = new Am({
         fetchFn: createMockFetch({
           status: 200,
@@ -349,12 +388,12 @@ describe("Am", () => {
       });
 
       const session = await am.signInWithToken("magic_link_token");
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.fetch).toBe("function");
     });
   });
 
   describe("acceptInvite", () => {
-    it("accepts clientId and token, returns Promise<AuthSession>", async () => {
+    it("accepts clientId and token, returns a session promise", async () => {
       const am = new Am({
         fetchFn: createMockFetch({
           status: 200,
@@ -370,7 +409,7 @@ describe("Am", () => {
         token: "invite_token",
       });
 
-      expect(session).toBeInstanceOf(AuthSession);
+      expect(typeof session.fetch).toBe("function");
     });
   });
 
@@ -473,21 +512,20 @@ describe("Am", () => {
 });
 
 // ============================================================================
-// AuthSession
+// Session values returned by Am
 // ============================================================================
 
-describe("AuthSession", () => {
-  describe("constructor", () => {
-    it("accepts Authentication and config", () => {
-      const session = new AuthSession(createValidAuthentication(), {});
-      expect(session).toBeInstanceOf(AuthSession);
-    });
-  });
+describe("session values returned by Am", () => {
+  function createSession(config: ConstructorParameters<typeof Am>[0] = {}): Session {
+    const am = new Am(config);
+    return am.createSession(createValidAuthentication());
+  }
 
   describe("tokens getter", () => {
     it("returns SessionTokens", () => {
       const auth = createValidAuthentication();
-      const session = new AuthSession(auth, {});
+      const am = new Am();
+      const session = am.createSession(auth);
       expect(session.tokens.accessToken).toBe(auth.tokens.accessToken);
       expect(session.tokens.refreshToken).toBe(auth.tokens.refreshToken);
       expect(session.tokens.tokenType).toBe("Bearer");
@@ -499,7 +537,8 @@ describe("AuthSession", () => {
   describe("profile getter", () => {
     it("returns SessionProfile", () => {
       const auth = createValidAuthentication();
-      const session = new AuthSession(auth, {});
+      const am = new Am();
+      const session = am.createSession(auth);
       expect(session.profile.id).toBe(auth.profile.id);
       expect(session.profile.applicationId).toBe(auth.profile.applicationId);
       expect(session.profile.status).toBe(auth.profile.status);
@@ -509,7 +548,8 @@ describe("AuthSession", () => {
   describe("toJSON", () => {
     it("returns Authentication object", () => {
       const auth = createValidAuthentication();
-      const session = new AuthSession(auth, {});
+      const am = new Am();
+      const session = am.createSession(auth);
       const json = session.toJSON();
       expect(json.tokens).toBeDefined();
       expect(json.profile).toBeDefined();
@@ -518,32 +558,25 @@ describe("AuthSession", () => {
     });
   });
 
-  describe("fromJSON static", () => {
-    it("creates AuthSession from Authentication", () => {
-      const auth = createValidAuthentication();
-      const session = AuthSession.fromJSON(auth, {});
-      expect(session).toBeInstanceOf(AuthSession);
-      expect(session.tokens.accessToken).toBe(auth.tokens.accessToken);
-    });
-  });
-
   describe("isExpired", () => {
     it("returns false for valid tokens", () => {
-      const session = new AuthSession(createValidAuthentication(), {});
+      const session = createSession();
       expect(session.isExpired()).toBe(false);
     });
 
     it("returns true for expired tokens", () => {
       const auth = createValidAuthentication();
       auth.tokens.expiresAt = Date.now() - 10000;
-      const session = new AuthSession(auth, {});
+      const am = new Am();
+      const session = am.createSession(auth);
       expect(session.isExpired()).toBe(true);
     });
   });
 
   describe("clear", () => {
     it("is a function that returns void", () => {
-      const session = new AuthSession(createValidAuthentication(), {});
+      const am = new Am();
+      const session = am.createSession(createValidAuthentication());
       const result = session.clear();
       expect(result).toBeUndefined();
     });
@@ -551,9 +584,10 @@ describe("AuthSession", () => {
 
   describe("fetch", () => {
     it("accepts url and returns Promise<Response>", async () => {
-      const session = new AuthSession(createValidAuthentication(), {
+      const am = new Am({
         fetchFn: createMockFetch({ status: 200, body: { data: "test" } }),
       });
+      const session = am.createSession(createValidAuthentication());
 
       const response = await session.fetch("https://api.example.com/resource");
       expect(response).toBeInstanceOf(Response);
@@ -561,9 +595,10 @@ describe("AuthSession", () => {
     });
 
     it("accepts optional RequestInit", async () => {
-      const session = new AuthSession(createValidAuthentication(), {
+      const am = new Am({
         fetchFn: createMockFetch({ status: 200 }),
       });
+      const session = am.createSession(createValidAuthentication());
 
       const response = await session.fetch("https://api.example.com/resource", {
         method: "POST",
@@ -773,13 +808,8 @@ describe("AuthSession", () => {
       expect(session.profile.activeMembership?.account.name).toBe("Second Account");
     });
 
-    it("updates storage and emits refresh/profileChange", async () => {
+    it("updates storage, emits tokensUpdated/profileUpdated, and then emits reloadRequired", async () => {
       const storage = createMockStorage();
-      let refreshCount = 0;
-      let profileChangeCount = 0;
-      let latestAccessToken = "";
-      let latestAccountId = "";
-
       const am = new Am({
         earlyRefreshMs: 0,
         storage,
@@ -837,23 +867,16 @@ describe("AuthSession", () => {
       initial.tokens.expiresIn = 1;
       initial.tokens.expiresAt = Date.now() + 1000;
       initial.profile.lastUpdatedAt = 0;
+      const events = createEventLog(am);
       const session = am.createSession(initial);
-
-      am.on("refresh", (tokens) => {
-        refreshCount += 1;
-        latestAccessToken = tokens.accessToken;
-      });
-      am.on("profileChange", (profile) => {
-        profileChangeCount += 1;
-        latestAccountId = profile.activeMembership?.account.id ?? "";
-      });
 
       await session.switchAccounts({ accountId: "acc_2" });
 
-      expect(refreshCount).toBe(1);
-      expect(profileChangeCount).toBe(1);
-      expect(latestAccessToken).toBe("switched_access_token");
-      expect(latestAccountId).toBe("acc_2");
+      expect(events.tokensUpdated).toHaveLength(1);
+      expect(events.profileUpdated).toHaveLength(1);
+      expect(events.reloadRequiredCount).toBe(1);
+      expect(events.tokensUpdated[0]?.accessToken).toBe("switched_access_token");
+      expect(events.profileUpdated[0]?.activeMembership?.account.id).toBe("acc_2");
 
       const storedTokens = JSON.parse(storage.getItem("am_tokens")!);
       const storedProfile = JSON.parse(storage.getItem("am_profile")!);
@@ -863,11 +886,112 @@ describe("AuthSession", () => {
     });
   });
 
+  describe("reloadRequired session behavior", () => {
+    it("clear emits reloadRequired once and suppresses session maintenance", async () => {
+      let fetchCallCount = 0;
+      const am = new Am({
+        fetchFn: async () => {
+          fetchCallCount += 1;
+          return new Response(
+            JSON.stringify({
+              id: "uid_updated",
+              application_id: "app_1",
+              status: "active",
+              identity: null,
+              credentials: [],
+              memberships: [],
+              active_membership: null,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        },
+      });
+      const events = createEventLog(am);
+      const session = am.createSession(createValidAuthentication());
+
+      session.clear();
+      session.clear();
+
+      await session.refresh();
+      await session.refetchProfile();
+
+      expect(events.reloadRequiredCount).toBe(1);
+      expect(fetchCallCount).toBe(0);
+    });
+
+    it("does not attempt refresh after a 401 once clear marks reloadRequired", async () => {
+      let fetchCallCount = 0;
+      const am = new Am({
+        fetchFn: async () => {
+          fetchCallCount += 1;
+          return new Response(
+            JSON.stringify({ type: "about:blank", title: "Unauthorized", status: 401 }),
+            { status: 401, headers: { "Content-Type": "application/problem+json" } },
+          );
+        },
+      });
+      const events = createEventLog(am);
+      const session = am.createSession(createValidAuthentication());
+
+      session.clear();
+      const response = await session.fetch("https://api.example.com/protected");
+
+      expect(response.status).toBe(401);
+      expect(fetchCallCount).toBe(1);
+      expect(events.authLost).toHaveLength(0);
+      expect(events.reloadRequiredCount).toBe(1);
+    });
+
+    it("switchAccounts suppresses refresh and profile refetch after reloadRequired is set", async () => {
+      let fetchCallCount = 0;
+      const am = new Am({
+        fetchFn: async (input) => {
+          fetchCallCount += 1;
+
+          if (String(input).endsWith("/auth/switch-accounts")) {
+            return new Response(
+              JSON.stringify({
+                tokens: {
+                  access_token: "switched_access_token",
+                  refresh_token: "switched_refresh_token",
+                  token_type: "Bearer",
+                  expires_in: 3600,
+                },
+                profile: {
+                  id: "uid_1",
+                  application_id: "app_1",
+                  status: "active",
+                  identity: null,
+                  credentials: [],
+                  memberships: [],
+                  active_membership: null,
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+
+          throw new Error("Unexpected fetch after reloadRequired");
+        },
+      });
+      const events = createEventLog(am);
+      const session = am.createSession(createValidAuthentication());
+
+      await session.switchAccounts({ accountId: "acc_2" });
+      await session.refresh();
+      await session.refetchProfile();
+
+      expect(fetchCallCount).toBe(1);
+      expect(events.reloadRequiredCount).toBe(1);
+    });
+  });
+
   describe("sendVerificationEmail", () => {
     it("returns Promise<void>", async () => {
-      const session = new AuthSession(createValidAuthentication(), {
+      const am = new Am({
         fetchFn: createMockFetch({ status: 204 }),
       });
+      const session = am.createSession(createValidAuthentication());
 
       const result = await session.sendVerificationEmail();
       expect(result).toBeUndefined();

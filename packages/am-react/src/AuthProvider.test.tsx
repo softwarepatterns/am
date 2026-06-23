@@ -5,16 +5,18 @@ import type { Am, AuthSession, SessionProfile, SessionTokens } from '@softwarepa
 import { AuthProvider, useAuth, useRequiredAuth } from './AuthProvider.js';
 
 type AuthEventName =
-  | 'sessionChange'
-  | 'unauthenticated'
-  | 'profileChange'
-  | 'refresh';
+  | 'signedIn'
+  | 'authLost'
+  | 'profileUpdated'
+  | 'tokensUpdated'
+  | 'reloadRequired';
 
 type AuthEventPayloadMap = {
-  sessionChange: AuthSession | null;
-  unauthenticated: AuthError;
-  profileChange: SessionProfile;
-  refresh: SessionTokens;
+  signedIn: AuthSession;
+  authLost: AuthError;
+  profileUpdated: SessionProfile;
+  tokensUpdated: SessionTokens;
+  reloadRequired: void;
 };
 
 type FakeSessionOptions = {
@@ -131,20 +133,22 @@ function createRecorder(): {
 
 async function renderProvider(options: {
   am: ReturnType<typeof createAm>;
-  onProfileChange?: (profile: SessionProfile) => void;
-  onRefresh?: (tokens: SessionTokens) => void;
-  onSessionChange?: (session: AuthSession | null) => void | Promise<void>;
-  onUnauthenticated?: (error: AuthError) => void;
+  onProfileUpdated?: (profile: SessionProfile) => void;
+  onTokensUpdated?: (tokens: SessionTokens) => void;
+  onSignedIn?: (session: AuthSession) => void | Promise<void>;
+  onAuthLost?: (error: AuthError) => void;
+  onReloadRequired?: () => void;
 }) {
   const { Observer, recorder } = createRecorder();
 
   render(
     <AuthProvider
       am={options.am.am}
-      onProfileChange={options.onProfileChange}
-      onRefresh={options.onRefresh}
-      onSessionChange={options.onSessionChange}
-      onUnauthenticated={options.onUnauthenticated}
+      onProfileUpdated={options.onProfileUpdated}
+      onTokensUpdated={options.onTokensUpdated}
+      onSignedIn={options.onSignedIn}
+      onAuthLost={options.onAuthLost}
+      onReloadRequired={options.onReloadRequired}
     >
       <Observer />
     </AuthProvider>,
@@ -304,7 +308,7 @@ describe('AuthProvider', () => {
     expect(recorder.getCurrent().session).toBe(expiredSession);
   });
 
-  it('clears an expired startup session when refresh fails and still becomes ready', async () => {
+  it('drops an expired startup session when refresh fails and still becomes ready', async () => {
     const expiredSession = createSession({
       expired: true,
       refreshImpl: async () => {
@@ -319,7 +323,7 @@ describe('AuthProvider', () => {
       expect(recorder.getCurrent().isReady).toBe(true);
     });
     expect((expiredSession.refresh as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
-    expect((expiredSession.clear as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect((expiredSession.clear as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(0);
     expect(recorder.getCurrent().session).toBeNull();
   });
 
@@ -334,7 +338,7 @@ describe('AuthProvider', () => {
     expect(recorder.getCurrent().session).toBeNull();
   });
 
-  it('updates React state when sessionChange emits a session', async () => {
+  it('updates React state when signedIn emits a session', async () => {
     const initialSession = createSession();
     const nextSession = createSession();
     const fakeAm = createAm({ session: initialSession });
@@ -346,7 +350,7 @@ describe('AuthProvider', () => {
     });
 
     await act(async () => {
-      fakeAm.emit('sessionChange', nextSession);
+      fakeAm.emit('signedIn', nextSession);
     });
 
     await waitFor(() => {
@@ -354,53 +358,34 @@ describe('AuthProvider', () => {
     });
   });
 
-  it('updates React state when sessionChange emits null', async () => {
-    const initialSession = createSession();
-    const fakeAm = createAm({ session: initialSession });
-
-    const recorder = await renderProvider({ am: fakeAm });
-
-    await waitFor(() => {
-      expect(recorder.getCurrent().session).toBe(initialSession);
-    });
-
-    await act(async () => {
-      fakeAm.emit('sessionChange', null);
-    });
-
-    await waitFor(() => {
-      expect(recorder.getCurrent().session).toBeNull();
-    });
-  });
-
-  it('waits for onSessionChange before publishing the new session', async () => {
+  it('waits for onSignedIn before publishing the new session', async () => {
     const initialSession = createSession();
     const nextSession = createSession();
     const fakeAm = createAm({ session: initialSession });
     let resolveSessionChange: (() => void) | null = null;
-    const onSessionChange = vi.fn(
+    const onSignedIn = vi.fn(
       () =>
         new Promise<void>((resolve) => {
           resolveSessionChange = resolve;
         }),
     );
 
-    const recorder = await renderProvider({ am: fakeAm, onSessionChange });
+    const recorder = await renderProvider({ am: fakeAm, onSignedIn });
 
     await waitFor(() => {
       expect(recorder.getCurrent().session).toBe(initialSession);
     });
 
     await act(async () => {
-      fakeAm.emit('sessionChange', nextSession);
+      fakeAm.emit('signedIn', nextSession);
       await Promise.resolve();
     });
 
-    expect(onSessionChange).toHaveBeenCalledWith(nextSession);
+    expect(onSignedIn).toHaveBeenCalledWith(nextSession);
     expect(recorder.getCurrent().session).toBe(initialSession);
 
     if (!resolveSessionChange) {
-      throw new Error('Expected onSessionChange promise resolver');
+      throw new Error('Expected onSignedIn promise resolver');
     }
 
     await act(async () => {
@@ -412,36 +397,36 @@ describe('AuthProvider', () => {
     });
   });
 
-  it('logs onSessionChange failures and still publishes the new session', async () => {
+  it('logs onSignedIn failures and still publishes the new session', async () => {
     const initialSession = createSession();
     const nextSession = createSession();
     const fakeAm = createAm({ session: initialSession });
     const callbackError = new Error('callback failed');
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const onSessionChange = vi.fn(() => {
+    const onSignedIn = vi.fn(() => {
       throw callbackError;
     });
 
-    const recorder = await renderProvider({ am: fakeAm, onSessionChange });
+    const recorder = await renderProvider({ am: fakeAm, onSignedIn });
 
     await waitFor(() => {
       expect(recorder.getCurrent().session).toBe(initialSession);
     });
 
     await act(async () => {
-      fakeAm.emit('sessionChange', nextSession);
+      fakeAm.emit('signedIn', nextSession);
     });
 
     await waitFor(() => {
       expect(recorder.getCurrent().session).toBe(nextSession);
     });
     expect(errorSpy).toHaveBeenCalledWith(
-      'Failed to apply session change',
+      'Failed to apply signed-in state',
       callbackError,
     );
   });
 
-  it('forwards profileChange only when onProfileChange is provided', async () => {
+  it('forwards profileUpdated only when onProfileUpdated is provided', async () => {
     const profile = {
       id: 'user_123',
       applicationId: 'app_123',
@@ -453,22 +438,22 @@ describe('AuthProvider', () => {
       lastUpdatedAt: Date.now(),
     } satisfies SessionProfile;
     const fakeAm = createAm();
-    const onProfileChange = vi.fn();
+    const onProfileUpdated = vi.fn();
 
-    await renderProvider({ am: fakeAm, onProfileChange });
+    await renderProvider({ am: fakeAm, onProfileUpdated });
 
     expect(fakeAm.on.mock.calls.map(([event]) => event)).toEqual(
-      expect.arrayContaining(['profileChange']),
+      expect.arrayContaining(['profileUpdated']),
     );
 
     await act(async () => {
-      fakeAm.emit('profileChange', profile);
+      fakeAm.emit('profileUpdated', profile);
     });
 
-    expect(onProfileChange).toHaveBeenCalledWith(profile);
+    expect(onProfileUpdated).toHaveBeenCalledWith(profile);
   });
 
-  it('forwards refresh only when onRefresh is provided', async () => {
+  it('forwards tokensUpdated only when onTokensUpdated is provided', async () => {
     const tokens = {
       accessToken: 'access_token',
       refreshToken: 'refresh_token',
@@ -477,72 +462,95 @@ describe('AuthProvider', () => {
       expiresAt: Date.now() + 3600_000,
     } satisfies SessionTokens;
     const fakeAm = createAm();
-    const onRefresh = vi.fn();
+    const onTokensUpdated = vi.fn();
 
-    await renderProvider({ am: fakeAm, onRefresh });
+    await renderProvider({ am: fakeAm, onTokensUpdated });
 
     expect(fakeAm.on.mock.calls.map(([event]) => event)).toEqual(
-      expect.arrayContaining(['refresh']),
+      expect.arrayContaining(['tokensUpdated']),
     );
 
     await act(async () => {
-      fakeAm.emit('refresh', tokens);
+      fakeAm.emit('tokensUpdated', tokens);
     });
 
-    expect(onRefresh).toHaveBeenCalledWith(tokens);
+    expect(onTokensUpdated).toHaveBeenCalledWith(tokens);
   });
 
-  it('clears the core session on unauthenticated without nulling React session state', async () => {
+  it('forwards authLost without clearing the core session', async () => {
     const session = createSession();
     const fakeAm = createAm({ session });
-    const onUnauthenticated = vi.fn();
+    const onAuthLost = vi.fn();
     const problem = createProblem();
 
-    const recorder = await renderProvider({ am: fakeAm, onUnauthenticated });
+    const recorder = await renderProvider({ am: fakeAm, onAuthLost });
 
     await waitFor(() => {
       expect(recorder.getCurrent().session).toBe(session);
     });
 
     await act(async () => {
-      fakeAm.emit('unauthenticated', problem);
+      fakeAm.emit('authLost', problem);
     });
 
-    expect((session.clear as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
-    expect(onUnauthenticated).toHaveBeenCalledWith(problem);
+    expect((session.clear as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(0);
+    expect(onAuthLost).toHaveBeenCalledWith(problem);
     expect(recorder.getCurrent().session).toBe(session);
   });
 
-  it('handles unauthenticated when am.session is already null', async () => {
+  it('handles authLost when am.session is already null', async () => {
     const fakeAm = createAm();
-    const onUnauthenticated = vi.fn();
+    const onAuthLost = vi.fn();
     const problem = createProblem();
 
-    await renderProvider({ am: fakeAm, onUnauthenticated });
+    await renderProvider({ am: fakeAm, onAuthLost });
 
     await act(async () => {
-      fakeAm.emit('unauthenticated', problem);
+      fakeAm.emit('authLost', problem);
     });
 
-    expect(onUnauthenticated).toHaveBeenCalledWith(problem);
+    expect(onAuthLost).toHaveBeenCalledWith(problem);
+  });
+
+  it('forwards reloadRequired without nulling React session state', async () => {
+    const session = createSession();
+    const fakeAm = createAm({ session });
+    const onReloadRequired = vi.fn();
+
+    const recorder = await renderProvider({ am: fakeAm, onReloadRequired });
+
+    await waitFor(() => {
+      expect(recorder.getCurrent().session).toBe(session);
+    });
+
+    await act(async () => {
+      fakeAm.emit('reloadRequired', undefined);
+    });
+
+    expect(onReloadRequired).toHaveBeenCalledTimes(1);
+    expect(recorder.getCurrent().session).toBe(session);
   });
 
   it('unsubscribes all registered listeners on unmount', async () => {
     const fakeAm = createAm();
-    const onProfileChange = vi.fn();
-    const onRefresh = vi.fn();
+    const onProfileUpdated = vi.fn();
+    const onTokensUpdated = vi.fn();
+    const onAuthLost = vi.fn();
+    const onReloadRequired = vi.fn();
     const { unmount } = render(
       <AuthProvider
         am={fakeAm.am}
-        onProfileChange={onProfileChange}
-        onRefresh={onRefresh}
+        onProfileUpdated={onProfileUpdated}
+        onTokensUpdated={onTokensUpdated}
+        onAuthLost={onAuthLost}
+        onReloadRequired={onReloadRequired}
       >
         <div>child</div>
       </AuthProvider>,
     );
 
     await waitFor(() => {
-      expect(fakeAm.unsubscribes).toHaveLength(4);
+      expect(fakeAm.unsubscribes).toHaveLength(5);
     });
 
     unmount();
@@ -551,6 +559,7 @@ describe('AuthProvider', () => {
     expect(fakeAm.unsubscribes[1]).toHaveBeenCalledTimes(1);
     expect(fakeAm.unsubscribes[2]).toHaveBeenCalledTimes(1);
     expect(fakeAm.unsubscribes[3]).toHaveBeenCalledTimes(1);
+    expect(fakeAm.unsubscribes[4]).toHaveBeenCalledTimes(1);
   });
 
   it('replaces subscriptions when the am instance changes', async () => {
@@ -576,22 +585,21 @@ describe('AuthProvider', () => {
     );
 
     await waitFor(() => {
-      expect(secondAm.unsubscribes).toHaveLength(2);
+      expect(secondAm.unsubscribes).toHaveLength(1);
       expect(recorder.getCurrent().session).toBe(secondSession);
     });
     expect(firstAm.unsubscribes[0]).toHaveBeenCalledTimes(1);
-    expect(firstAm.unsubscribes[1]).toHaveBeenCalledTimes(1);
 
     const replacementSession = createSession();
 
     await act(async () => {
-      firstAm.emit('sessionChange', replacementSession);
+      firstAm.emit('signedIn', replacementSession);
     });
 
     expect(recorder.getCurrent().session).toBe(secondSession);
 
     await act(async () => {
-      secondAm.emit('sessionChange', replacementSession);
+      secondAm.emit('signedIn', replacementSession);
     });
 
     await waitFor(() => {
