@@ -1,0 +1,65 @@
+{
+  "name": "@softwarepatterns/am-react-components",
+  "version": "0.3.0",
+  "description": "Unstyled React auth input components for AccountMaker (Am)",
+  "keywords": [
+    "authentication",
+    "auth",
+    "react",
+    "components",
+    "accountmaker"
+  ],
+  "author": "Your Name <info@example.com>",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/softwarepatterns/am/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/softwarepatterns/am.git",
+    "directory": "packages/am-react-components"
+  },
+  "homepage": "https://github.com/softwarepatterns/am/tree/main/packages/am-react-components#readme",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:clean": "rm -rf dist .tsbuildinfo",
+    "build": "bun run build:clean && bunx tsc -b tsconfig.build.json",
+    "prepublishOnly": "bun run build",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "typecheck": "bunx tsc --noEmit",
+    "lint": "oxlint"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.1.15",
+    "@types/react-dom": "^19.1.9",
+    "jsdom": "^25.0.1",
+    "oxlint": "^1.39.0",
+    "react-dom": "^19.1.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
