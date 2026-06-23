@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, setDefaultTimeout } from "bun:test";
-import { Am, AuthSession, AuthError } from "../../src/auth";
+import { Am, AuthSession } from "../../src/auth";
+import { AuthError } from "../../src/lib/auth-error";
 import type { StorageLike, ClientId } from "../../src/types";
 
 const BASE_URL = "https://api.accountmaker.com";

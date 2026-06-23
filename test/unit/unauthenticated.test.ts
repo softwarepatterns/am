@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { Am, AuthError } from "../../src/auth";
+import { Am } from "../../src/auth";
+import { AuthError } from "../../src/lib/auth-error";
 import type { SessionTokens, SessionProfile } from "../../src/types";
 
 /**

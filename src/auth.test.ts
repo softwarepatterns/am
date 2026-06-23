@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { AuthError } from "./auth";
+import { AuthError } from "./lib/auth-error";
 
 describe("AuthError", () => {
   it("exposes problem details properties", () => {

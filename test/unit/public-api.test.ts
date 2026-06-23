@@ -4,7 +4,8 @@
  * They mock fetchFn to avoid network calls.
  */
 import { describe, it, expect } from "bun:test";
-import { Am, AuthSession, AuthError } from "../../src/auth";
+import { Am, AuthSession } from "../../src/auth";
+import { AuthError } from "../../src/lib/auth-error";
 import type {
   SessionTokens,
   SessionProfile,

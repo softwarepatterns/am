@@ -5,33 +5,39 @@ import type {
   EmailCheckStatus,
   LoginMethod,
   OAuth2LoginMethod,
-  ProblemDetails,
   SessionProfile,
   SessionTokens,
-  StorageLike,
 } from "./types";
+import { camelCaseObj, snakeCaseObj } from "./lib/casing";
+import { AuthError } from "./lib/auth-error";
+import {
+  isProblemDetails,
+  type ProblemDetails,
+  toGenericProblemDetails,
+} from "./lib/problem-details";
+import { clearStorage, getStorageLike } from "./lib/storage";
+import {
+  isProblemJsonResponse,
+  readResJsonAsObject,
+} from "./lib/http-response";
+import { fetchGETHeaders, fetchPOSTHeaders, updateBearer } from "./lib/fetch";
+import { createConfig, type Config } from "./lib/config";
+import { isSessionStateExpired, type SessionState } from "./lib/session-state";
+import {
+  readSessionTokens,
+  toSessionTokens,
+  writeTokensIfNewer,
+} from "./lib/session-tokens";
+import {
+  readSessionProfile,
+  toSessionProfile,
+  writeProfileIfNewer,
+} from "./lib/session-profile";
 
-const MINUTE_MS = 60 * 1000;
 const SESSION_STATE = Symbol("session_state");
 const AUTH_SESSION = Symbol("auth_session");
 const AUTH_STATE = Symbol("auth_state");
 const EMITTER = Symbol("emitter");
-
-type StorageConfig = StorageLike | "localStorage" | null | undefined;
-
-type FetchFn = (
-  input: RequestInfo | URL,
-  init?: RequestInit,
-) => Promise<Response>;
-
-type Config = {
-  baseUrl: string;
-  earlyRefreshMs: number;
-  fetchFn: FetchFn;
-  profileStorageKey: string;
-  storage: StorageConfig;
-  tokensStorageKey: string;
-};
 
 type AuthEventMap = {
   refresh: SessionTokens;
@@ -40,126 +46,15 @@ type AuthEventMap = {
   sessionChange: AuthSession | null;
 };
 
-type SessionState = {
-  cleared: boolean;
-  config: Config;
-  refreshPromise: Promise<void> | null;
-  profilePromise: Promise<void> | null;
-  profile: SessionProfile;
-  tokens: SessionTokens;
-};
-
 type AuthState = {
   config: Config;
   listeners: { [K in keyof AuthEventMap]?: Set<(v: AuthEventMap[K]) => void> };
 };
 
-function getBrowserLocalStorage(): StorageLike | null {
-  try {
-    if (typeof window === "undefined") return null;
-    if (!window.localStorage) return null;
-    return window.localStorage;
-  } catch {
-    return null;
-  }
-}
-
-function resolveStorage(storageConfig: StorageConfig): StorageLike | null {
-  if (!storageConfig) return null;
-  if (storageConfig === "localStorage") return getBrowserLocalStorage();
-  return storageConfig;
-}
-
-function safeParse<T>(raw: string | null): T | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
-function readJson<T>(storage: StorageLike | null, key: string): T | null {
-  if (!storage) return null;
-  return safeParse<T>(storage.getItem(key));
-}
-
-function writeJson<T>(
-  storage: StorageLike | null,
-  key: string,
-  value: T,
-): void {
-  if (!storage) return;
-  try {
-    storage.setItem(key, JSON.stringify(value));
-  } catch {}
-}
-
-function removeKey(storage: StorageLike | null, key: string): void {
-  if (!storage) return;
-  try {
-    storage.removeItem(key);
-  } catch {}
-}
-
 function clearAuth(config: Config) {
-  const storage = resolveStorage(config.storage);
-  removeKey(storage, config.profileStorageKey);
-  removeKey(storage, config.tokensStorageKey);
-}
-
-function writeTokensIfNewer(
-  storage: StorageLike | null,
-  key: string,
-  next: SessionTokens,
-) {
-  if (!storage) return;
-
-  const curRaw = readJson<unknown>(storage, key);
-  const cur = isSessionTokens(curRaw) ? curRaw : null;
-
-  if (curRaw !== null && !cur) removeKey(storage, key);
-  if (cur && cur.expiresAt >= next.expiresAt) return;
-
-  writeJson(storage, key, next);
-}
-
-function writeProfileIfNewer(
-  storage: StorageLike | null,
-  key: string,
-  next: SessionProfile,
-) {
-  if (!storage) return;
-
-  const curRaw = readJson<unknown>(storage, key);
-  const cur = isSessionProfile(curRaw) ? curRaw : null;
-
-  if (curRaw !== null && !cur) removeKey(storage, key);
-  if (cur && cur.lastUpdatedAt >= next.lastUpdatedAt) return;
-
-  writeJson(storage, key, next);
-}
-
-function isSessionTokens(x: any): x is SessionTokens {
-  return (
-    !!x &&
-    typeof x.accessToken === "string" &&
-    typeof x.refreshToken === "string" &&
-    typeof x.expiresAt === "number" &&
-    typeof x.expiresIn === "number" &&
-    x.tokenType === "Bearer"
-  );
-}
-
-function isSessionProfile(x: any): x is SessionProfile {
-  return (
-    !!x &&
-    typeof x.id === "string" &&
-    typeof x.applicationId === "string" &&
-    typeof x.status === "string" &&
-    typeof x.lastUpdatedAt === "number" &&
-    (typeof x.identity === "object" || x.identity === null)
-  );
+  const storage = getStorageLike(config.storage);
+  clearStorage(storage, config.profileStorageKey);
+  clearStorage(storage, config.tokensStorageKey);
 }
 
 function getSessionState(session: AuthSession): SessionState {
@@ -216,230 +111,39 @@ function emitSessionStateEvent<K extends keyof AuthEventMap>(
   emit(event, value);
 }
 
-function camelCaseStr(str: string): string {
-  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
-}
-
-function camelCaseObj(input: unknown): any {
-  if (input === null || typeof input !== "object") {
-    return input;
-  }
-
-  if (Array.isArray(input)) {
-    return input.map((item) => camelCaseObj(item));
-  }
-
-  const obj = input as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-
-  for (const key of Object.keys(obj)) {
-    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-      result[camelCaseStr(key)] = camelCaseObj(obj[key]);
-    }
-  }
-
-  return result;
-}
-
-function snakeCaseStr(str: string): string {
-  return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
-}
-
-function snakeCaseObj(input: unknown): any {
-  if (input === null || typeof input !== "object") {
-    return input;
-  }
-
-  if (Array.isArray(input)) {
-    return input.map((item) => snakeCaseObj(item));
-  }
-
-  const obj = input as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-
-  for (const key of Object.keys(obj)) {
-    if (Object.prototype.hasOwnProperty.call(obj, key)) {
-      result[snakeCaseStr(key)] = snakeCaseObj(obj[key]);
-    }
-  }
-
-  return result;
-}
-
-/**
- * AuthError represents structured authentication failures from Accountmaker endpoints.
- *
- * AuthError wraps RFC 7807 Problem Details. invalidParams may be present for field-level validation.
- * Network failures throw other error types.
- *
- * Also note that the `type` field often contains a URI that points to documentation about the
- * specific error type, including how to resolve it, code samples, and links to the RFCs or other
- * standards that define the error.
- *
- * @example
- * ```ts
- * try {
- *  const session = await am.signIn({ email: 'test@example.com', password: 'password123' });
- * } catch (e) {
- *  if (e instanceof AuthError) {
- *   console.error("Authentication failed:", e.title);
- *   if (e.invalidParams) {
- *    for (const param of e.invalidParams) {
- *      console.error(` - Invalid parameter: ${param.path} (${param.type})`);
- *     }
- *    }
- *   } else {
- *    console.error("Unexpected error:", e);
- *   }
- * }
- * ```
- *
- * Note that HTTP error codes are distinctly:
- * - 400: Client error (bad request, invalid input, etc.)
- * - 401: Unauthenticated (we don't know who you are)
- * - 402: Payment required (e.g. billing issue)
- * - 403: Unauthorized (we know who you are, but you don't have permission)
- * - 404: Not found
- * - 409: Conflict (email already registered, user already invited, etc.)
- * - 429: Too many requests (rate limiting)
- * - 500: Internal server error (server's fault)
- */
-export class AuthError extends Error {
-  public readonly problem: ProblemDetails;
-
-  constructor(problem: ProblemDetails) {
-    super(problem.title);
-    this.name = "AuthError";
-    this.problem = Object.freeze(problem);
-  }
-  get type(): string {
-    return this.problem.type;
-  }
-  get title(): string {
-    return this.problem.title;
-  }
-  get status(): number {
-    return this.problem.status;
-  }
-  get code(): string | undefined {
-    return this.problem.code;
-  }
-  get detail(): string | undefined {
-    return this.problem.detail;
-  }
-  get invalidParams(): ProblemDetails["invalidParams"] | undefined {
-    return this.problem.invalidParams;
-  }
-}
-
-function defaultFetchFn(): FetchFn {
-  const f = (globalThis as any).fetch as FetchFn | undefined;
-  if (typeof f === "function") {
-    return f.bind(globalThis);
-  }
-
-  return async () => {
-    throw new Error(
-      "Missing fetch implementation. Provide config.fetchFn or use a runtime with global fetch.",
-    );
-  };
-}
-
-const defaultConfig: Config = {
-  fetchFn: defaultFetchFn(),
-  baseUrl: "https://api.accountmaker.com",
-  earlyRefreshMs: MINUTE_MS,
-  storage: null,
-  tokensStorageKey: "am_tokens",
-  profileStorageKey: "am_profile",
-};
-
-function isProblemJson(res: Response): boolean {
-  const contentType = res.headers.get("Content-Type") || "";
-  return contentType.includes("application/problem+json");
-}
-
-async function readJsonSafe(res: Response): Promise<unknown> {
-  const contentType = res.headers.get("Content-Type") || "";
-  if (
-    !contentType.includes("application/json") &&
-    !contentType.includes("+json")
-  )
-    return null;
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-function toGenericProblem(res: Response, detail?: unknown): ProblemDetails {
-  return {
-    type: "about:blank",
-    title: res.statusText || "Request failed",
-    status: res.status,
-    detail: typeof detail === "string" ? detail : undefined,
-  };
-}
-
 function getProblemJson(res: Response, json: any): ProblemDetails {
-  if (
-    isProblemJson(res) &&
-    json &&
-    typeof json === "object" &&
-    typeof json.type === "string" &&
-    typeof json.title === "string" &&
-    typeof json.status === "number"
-  ) {
-    return json as ProblemDetails;
+  if (isProblemJsonResponse(res) && isProblemDetails(json)) {
+    return json;
   }
-  return toGenericProblem(res, json);
+  return toGenericProblemDetails(res, json);
 }
-
-/** Adds an Authorization header to RequestInit. Supports Headers, arrays, and plain objects. */
-function withBearer(init: RequestInit, token: string): RequestInit {
-  const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${token}`);
-  return { ...init, headers };
-}
-
-/** Performs a single authenticated fetch and returns Response. */
-const fetchSessionResponse = async (
-  state: SessionState,
-  input: RequestInfo | URL,
-  init: RequestInit = {},
-): Promise<Response> => {
-  return state.config.fetchFn(
-    input,
-    withBearer(init, state.tokens.accessToken),
-  );
-};
 
 /** Refreshes if needed, retries once on 401, and returns Response. */
 const fetchSessionResponseEnsureFresh = async (
   state: SessionState,
-  input: RequestInfo | URL,
+  url: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> => {
-  if (isExpired(state)) {
+  if (isSessionStateExpired(state)) {
     await refresh(state); // may throw AuthError
   }
 
-  let res = await fetchSessionResponse(state, input, init);
+  const fetchFn = state.config.fetchFn;
+  const res1 = await fetchFn(url, updateBearer(init, state.tokens.accessToken));
 
-  if (res.status !== 401) return res;
-  if (state.cleared) return res;
+  if (res1.status !== 401) return res1;
+  if (state.cleared) return res1;
 
   await refresh(state); // may throw AuthError (emits unauthenticated on 401)
-  res = await fetchSessionResponse(state, input, init);
-  return res;
+  const res2 = await fetchFn(url, updateBearer(init, state.tokens.accessToken));
+  return res2;
 };
 
 /** Parses JSON (camelCase) and throws AuthError on non-2xx responses. */
 const handleJsonOrThrow = async (res: Response) => {
   if (res.status === 204) return;
 
-  const json = camelCaseObj(await readJsonSafe(res));
+  const json = camelCaseObj(await readResJsonAsObject(res));
 
   if (!res.ok) {
     throw new AuthError(getProblemJson(res, json));
@@ -469,9 +173,7 @@ const unauthGet = async (
   const url = qs ? `${baseUrl}${path}?${qs}` : `${baseUrl}${path}`;
   const res = await fetchFn(url, {
     method: "GET",
-    headers: {
-      Accept: "application/json",
-    },
+    headers: fetchGETHeaders,
   });
   return handleJsonOrThrow(res);
 };
@@ -484,21 +186,10 @@ const unauthPost = async (
 ) => {
   const res = await fetchFn(`${baseUrl}${path}`, {
     method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
+    headers: fetchPOSTHeaders,
     body: JSON.stringify(snakeCaseObj(body)),
   });
   return handleJsonOrThrow(res);
-};
-
-const isExpired = (state: SessionState): boolean => {
-  const early = Math.min(
-    Math.max(state.config.earlyRefreshMs, 0),
-    5 * MINUTE_MS,
-  );
-  return Date.now() >= state.tokens.expiresAt - early;
 };
 
 const refresh = async (state: SessionState): Promise<void> => {
@@ -532,9 +223,7 @@ const authGet = async (
   const url = qs ? `${baseUrl}${path}?${qs}` : `${baseUrl}${path}`;
   return await getSessionJsonEnsureFresh(state, url, {
     method: "GET",
-    headers: {
-      Accept: "application/json",
-    },
+    headers: fetchGETHeaders,
   });
 };
 
@@ -547,32 +236,9 @@ const authPost = async (
   const baseUrl = state.config.baseUrl;
   return await getSessionJsonEnsureFresh(state, `${baseUrl}${path}`, {
     method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
+    headers: fetchPOSTHeaders,
     body: JSON.stringify(snakeCaseObj(body)),
   });
-};
-
-const toSessionTokens = (tokens: any): SessionTokens => {
-  const expiresIn = typeof tokens.expiresIn === "number" ? tokens.expiresIn : 0;
-  return {
-    ...tokens,
-    expiresAt: Date.now() + expiresIn * 1000,
-  };
-};
-
-const toSessionProfile = (profile: any): SessionProfile => {
-  const credentials = profile.credentials ?? profile.emailCredentials;
-  const activeMembership = profile.activeMembership ?? null;
-
-  return {
-    ...profile,
-    credentials,
-    activeMembership,
-    lastUpdatedAt: Date.now(),
-  };
 };
 
 function setSessionAuthentication(
@@ -582,7 +248,7 @@ function setSessionAuthentication(
   state.tokens = authentication.tokens;
   state.profile = authentication.profile;
 
-  const storage = resolveStorage(state.config.storage);
+  const storage = getStorageLike(state.config.storage);
   writeTokensIfNewer(storage, state.config.tokensStorageKey, state.tokens);
   writeProfileIfNewer(storage, state.config.profileStorageKey, state.profile);
 
@@ -595,10 +261,7 @@ async function doRefresh(state: SessionState): Promise<void> {
 
   const res = await fetchFn(`${baseUrl}/auth/refresh`, {
     method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
+    headers: fetchPOSTHeaders,
     body: JSON.stringify(
       snakeCaseObj({ refreshToken: state.tokens.refreshToken }),
     ),
@@ -617,7 +280,7 @@ async function doRefresh(state: SessionState): Promise<void> {
   const tokens = toSessionTokens(json);
   state.tokens = tokens;
 
-  const storage = resolveStorage(state.config.storage);
+  const storage = getStorageLike(state.config.storage);
   writeTokensIfNewer(storage, state.config.tokensStorageKey, tokens);
 
   emitSessionStateEvent(state, "refresh", tokens);
@@ -627,7 +290,7 @@ async function doRefetchProfile(state: SessionState): Promise<void> {
   const profile = toSessionProfile(await authGet(state, "/auth/me", {}));
   state.profile = profile;
 
-  const storage = resolveStorage(state.config.storage);
+  const storage = getStorageLike(state.config.storage);
   writeProfileIfNewer(storage, state.config.profileStorageKey, profile);
 
   emitSessionStateEvent(state, "profileChange", profile);
@@ -657,7 +320,7 @@ async function doSwitchAccounts(
  */
 export class AuthSession {
   constructor(initial: Authentication, config: Partial<Config>) {
-    const merged = { ...defaultConfig, ...config } as Config;
+    const merged = createConfig(config);
 
     const state: SessionState = {
       ...initial,
@@ -669,7 +332,7 @@ export class AuthSession {
 
     setSessionState(this, state);
 
-    const storage = resolveStorage(merged.storage);
+    const storage = getStorageLike(merged.storage);
     writeTokensIfNewer(storage, merged.tokensStorageKey, state.tokens);
 
     if (state.profile) {
@@ -718,7 +381,7 @@ export class AuthSession {
    * "soon" threshold is configured via Config.earlyRefreshMs (default 1 minute).
    */
   isExpired(): boolean {
-    return isExpired(getSessionState(this));
+    return isSessionStateExpired(getSessionState(this));
   }
 
   /**
@@ -817,7 +480,7 @@ export class AuthSession {
 export class Am {
   constructor(config?: Partial<Config>) {
     setAuthState(this, {
-      config: { ...defaultConfig, ...config },
+      config: createConfig(config),
       listeners: {},
     });
   }
@@ -862,18 +525,15 @@ export class Am {
    */
   restoreSession(): AuthSession | null {
     const config = getAuthState(this).config;
-    const storage = resolveStorage(config.storage);
+    const storage = getStorageLike(config.storage);
     if (!storage) return null;
 
-    const tokensRaw = readJson<unknown>(storage, config.tokensStorageKey);
-    const tokens = isSessionTokens(tokensRaw) ? tokensRaw : null;
-
-    const profileRaw = readJson<unknown>(storage, config.profileStorageKey);
-    const profile = isSessionProfile(profileRaw) ? profileRaw : null;
+    const tokens = readSessionTokens(storage, config.tokensStorageKey);
+    const profile = readSessionProfile(storage, config.profileStorageKey);
 
     if (!tokens || !profile) {
-      removeKey(storage, config.tokensStorageKey);
-      removeKey(storage, config.profileStorageKey);
+      clearStorage(storage, config.tokensStorageKey);
+      clearStorage(storage, config.profileStorageKey);
       return null;
     }
 
