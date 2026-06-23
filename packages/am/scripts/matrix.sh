@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Step 0: move to repo root
+# Step 0: move to package root
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 echo "== Step 1: build =="
-npm run build
+bun run build
 
 echo "== Step 2: pack (create a real install artifact) =="
 TGZ="$(npm pack | tail -n 1)"

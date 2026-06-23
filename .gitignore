@@ -4,6 +4,9 @@
 rclone.conf
 dist/
 node_modules/
+packages/*/dist/
+packages/*/node_modules/
+packages/*/*.tgz
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
@@ -11,8 +14,13 @@ yarn-error.log*
 .rollup.cache
 tsconfig.tsbuildinfo
 tsconfig.build.tsbuildinfo
+packages/*/tsconfig.tsbuildinfo
+packages/*/tsconfig.build.tsbuildinfo
+packages/*/.tsbuildinfo/
 .aidigestignore
 codebase.md
 package-lock.json
+packages/*/matrix/*/package-lock.json
+packages/*/matrix/*/node_modules/
 yarn.lock
 softwarepatterns-*
