@@ -5,7 +5,7 @@ Public SDK packages for AccountMaker authentication.
 ## Packages
 
 * `packages/am`: `@softwarepatterns/am`, the core TypeScript auth SDK.
-* `packages/am-react`: `@softwarepatterns/am-react`, React bindings and auth UI helpers for `@softwarepatterns/am`.
+* `packages/am-react`: `@softwarepatterns/am-react`, headless React auth adapter for `@softwarepatterns/am`.
 * `packages/am-astro`: planned Astro integration for `@softwarepatterns/am`.
 
 ## Development

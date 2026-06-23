@@ -1,6 +1,6 @@
 {
   "name": "@softwarepatterns/am-react",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "description": "Headless React auth adapter for AccountMaker (Am)",
   "keywords": [
     "authentication",
@@ -9,7 +9,7 @@
     "sdk",
     "accountmaker"
   ],
-  "author": "Your Name <info@example.com>",
+  "author": "Software Patterns <info@softwarepatterns.com>",
   "license": "MIT",
   "type": "module",
   "bugs": {
@@ -47,7 +47,7 @@
     "lint": "oxlint"
   },
   "dependencies": {
-    "@softwarepatterns/am": "^0.3.0"
+    "@softwarepatterns/am": "^0.3.1"
   },
   "peerDependencies": {
     "react": ">=19"

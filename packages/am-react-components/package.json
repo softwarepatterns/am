@@ -1,6 +1,6 @@
 {
   "name": "@softwarepatterns/am-react-components",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "description": "Unstyled React auth input components for AccountMaker (Am)",
   "keywords": [
     "authentication",
@@ -9,7 +9,7 @@
     "components",
     "accountmaker"
   ],
-  "author": "Your Name <info@example.com>",
+  "author": "Software Patterns <info@softwarepatterns.com>",
   "license": "MIT",
   "type": "module",
   "bugs": {

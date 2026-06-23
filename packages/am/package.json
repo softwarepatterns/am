@@ -1,6 +1,6 @@
 {
   "name": "@softwarepatterns/am",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Auth client SDK for AccountMaker (Am)",
   "keywords": [
     "authentication",
@@ -12,7 +12,7 @@
     "jwt",
     "session-management"
   ],
-  "author": "Your Name <info@example.com>",
+  "author": "Software Patterns <info@softwarepatterns.com>",
   "license": "MIT",
   "type": "module",
   "bugs": {

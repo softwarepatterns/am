@@ -21,7 +21,7 @@
     "type": "git",
     "url": "git+https://github.com/softwarepatterns/am.git"
   },
-  "author": "Your Name <info@example.com>",
+  "author": "Software Patterns <info@softwarepatterns.com>",
   "license": "MIT",
   "devDependencies": {
     "@commitlint/cli": "^20.3.1",
