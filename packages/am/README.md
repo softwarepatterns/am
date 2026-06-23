@@ -59,6 +59,8 @@ import { Am } from "@softwarepatterns/am";
 const am = new Am();
 ```
 
+Examples live in [`examples/`](./examples).
+
 ---
 
 ## Authentication flows

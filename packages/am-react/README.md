@@ -5,6 +5,8 @@ Headless React auth adapter for **AccountMaker (Am)**.
 This package exposes the React provider and hook for an `Am` instance and its
 current `AuthSession`.
 
+Examples live in [`examples/`](./examples).
+
 ## Install
 
 ```bash
@@ -39,5 +41,6 @@ export function App() {
 
 - `AuthProvider`
 - `useAuth()`
+- `useRequiredAuth()`
 - `AuthContextValue`
 - `AuthProviderProps`
